@@ -4,6 +4,8 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QCursor
 from ui.bubbles import BubbleWidget, NameLabel
 from core.llm import chat
+from core.backup_manager import one_click_backup
+from configs.settings import get_backup_path, set_backup_path
 
 class HoverButton(QPushButton):
     def __init__(self, text):
@@ -27,6 +29,47 @@ class HoverButton(QPushButton):
             }
         """)
 
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setFixedSize(480, 180)
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.addWidget(QLabel("Backup Folder Path:"))
+
+        self.path_edit = QLineEdit()
+        self.path_edit.setText(get_backup_path())
+        layout.addWidget(self.path_edit)
+
+        btn_layout = QHBoxLayout()
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self.browse_folder)
+        btn_layout.addWidget(browse_btn)
+
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_path)
+        btn_layout.addWidget(save_btn)
+
+        layout.addLayout(btn_layout)
+
+    def browse_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Backup Folder")
+        if folder:
+            self.path_edit.setText(folder)
+
+    def save_path(self):
+        path = self.path_edit.text().strip()
+        if not path:
+            QMessageBox.warning(self, "Warning", "Path cannot be empty!")
+            return
+        set_backup_path(path)
+        QMessageBox.information(self, "Success", "Backup path saved!")
+        self.close()
+
 class ChatWindow(QMainWindow):
     ai_response_ready = Signal(str)
 
@@ -35,6 +78,7 @@ class ChatWindow(QMainWindow):
         self.setWindowTitle("Diles F Chat")
         self.resize(900, 650)
         self.ai_name = "Diles F"
+        self.settings_dialog = SettingsDialog(self)
         self.init_ui()
         self.ai_response_ready.connect(self.show_ai_message)
 
@@ -64,8 +108,17 @@ class ChatWindow(QMainWindow):
             QLineEdit:focus {border:1px solid #007acc; background:#32343a;}
         """)
         sl.addWidget(self.user_input)
+
+        backup_btn = HoverButton("One-Click Backup")
+        backup_btn.clicked.connect(self.do_backup)
+        sl.addWidget(backup_btn)
+
         sl.addWidget(HoverButton("Chat History"))
-        sl.addWidget(HoverButton("Settings"))
+
+        self.settings_btn = HoverButton("Settings")
+        self.settings_btn.clicked.connect(self.settings_dialog.show)
+        sl.addWidget(self.settings_btn)
+
         sl.addWidget(HoverButton("About"))
         sl.addStretch()
         main_layout.addWidget(self.sidebar)
@@ -100,15 +153,36 @@ class ChatWindow(QMainWindow):
         input_row.addWidget(self.input_box, stretch=10)
         input_row.addWidget(self.send_btn)
         chat_area.addLayout(input_row)
-        main_layout.addLayout(chat_area, stretch=1)
 
         self.loading = QLabel("")
         self.loading.setAlignment(Qt.AlignCenter)
         self.loading.setStyleSheet("color:#ccc;")
         chat_area.addWidget(self.loading)
 
+        main_layout.addLayout(chat_area, stretch=1)
+
     def get_username(self):
-        return self.user_input.text().strip() or "User"
+        return self.user_input.text().strip()
+
+    def send_message(self):
+        username = self.get_username()
+        if not username:
+            QMessageBox.warning(self, "Warning", "Please enter a username first!")
+            return
+
+        txt = self.input_box.text().strip()
+        if not txt:
+            return
+
+        self.add_message(txt, is_user=True)
+        self.input_box.clear()
+        self.loading.setText("Diles F is thinking...")
+        self.send_btn.setEnabled(False)
+        threading.Thread(target=self.worker, args=(txt, username), daemon=True).start()
+
+    def do_backup(self):
+        result = one_click_backup()
+        QMessageBox.information(self, "Backup Complete", result)
 
     def add_message(self, text, is_user):
         available_width = self.scroll.viewport().width()
@@ -137,16 +211,6 @@ class ChatWindow(QMainWindow):
     def scroll_to_bottom(self):
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
-
-    def send_message(self):
-        txt = self.input_box.text().strip()
-        if not txt:
-            return
-        self.add_message(txt, is_user=True)
-        self.input_box.clear()
-        self.loading.setText("Diles F is thinking...")
-        self.send_btn.setEnabled(False)
-        threading.Thread(target=self.worker, args=(txt, self.get_username()), daemon=True).start()
 
     def worker(self, text, username):
         try:

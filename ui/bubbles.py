@@ -11,9 +11,8 @@ class BubbleWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # 🔥 再缩小 8px，彻底消除最后 1 个字符溢出
         padding_total = 32
-        safe_margin = 18  # 从 10 → 18，多留 8px 安全区
+        safe_margin = 18
         available_width = max_width - padding_total - safe_margin
 
         wrapped_text = self.wrap_text(text, available_width, QFont("Arial", 11))
