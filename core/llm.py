@@ -4,28 +4,16 @@ import ollama
 from configs.settings import MODEL_NAME
 from core.prompt_manager import load_system_prompt
 from core.memory_manager import get_user_facts, save_user_memory
+from core.chat_history import get_global_history, add_global_message
 
 MEMORY_DIR = "data/memory"
-GLOBAL_HISTORY_PATH = os.path.join(MEMORY_DIR, "global_chat_history.json")
 MAX_HISTORY_LENGTH = 20
 
 if not os.path.exists(MEMORY_DIR):
     os.makedirs(MEMORY_DIR)
 
-def load_global_history():
-    if os.path.exists(GLOBAL_HISTORY_PATH):
-        with open(GLOBAL_HISTORY_PATH, "r", encoding="utf-8") as f:
-            history = json.load(f)
-        return history[-MAX_HISTORY_LENGTH:]
-    return []
-
-def save_global_history(history):
-    trimmed = history[-MAX_HISTORY_LENGTH:]
-    with open(GLOBAL_HISTORY_PATH, "w", encoding="utf-8") as f:
-        json.dump(trimmed, f, indent=2, ensure_ascii=False)
-
 def chat(user_input, username):
-    history = load_global_history()
+    history = get_global_history(limit=MAX_HISTORY_LENGTH)
     base_prompt = load_system_prompt()
     user_facts = get_user_facts(username)
 
@@ -79,8 +67,7 @@ Output only new list."""
     except:
         pass
 
-    history.append({"role": "user", "content": f"[{username}] {user_input}"})
-    history.append({"role": "assistant", "content": reply})
-    save_global_history(history)
+    add_global_message("user", f"[{username}] {user_input}")
+    add_global_message("assistant", reply)
 
     return reply

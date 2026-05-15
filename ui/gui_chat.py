@@ -1,11 +1,13 @@
 import threading
+import sys
+import os
 from PySide6.QtWidgets import *
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QCursor
 from ui.bubbles import BubbleWidget, NameLabel
 from core.llm import chat
 from core.backup_manager import one_click_backup
-from configs.settings import get_backup_path, set_backup_path
+from configs.settings import get_backup_path, set_backup_path, get_db_path, save_db_path
 
 class HoverButton(QPushButton):
     def __init__(self, text):
@@ -33,42 +35,75 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setFixedSize(480, 180)
+        self.setFixedSize(580, 260)
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(24, 24, 24, 20)
+        layout.setSpacing(16)
+
         layout.addWidget(QLabel("Backup Folder Path:"))
+        backup_row = QHBoxLayout()
+        self.backup_edit = QLineEdit()
+        self.backup_edit.setText(get_backup_path())
+        backup_row.addWidget(self.backup_edit)
+        browse_backup = QPushButton("Browse")
+        browse_backup.clicked.connect(self.browse_backup_folder)
+        backup_row.addWidget(browse_backup)
+        layout.addLayout(backup_row)
 
-        self.path_edit = QLineEdit()
-        self.path_edit.setText(get_backup_path())
-        layout.addWidget(self.path_edit)
+        layout.addWidget(QLabel("Global Chat Database Path:"))
+        db_row = QHBoxLayout()
+        self.db_edit = QLineEdit()
+        self.db_edit.setText(get_db_path())
+        db_row.addWidget(self.db_edit)
+        browse_db = QPushButton("Browse")
+        browse_db.clicked.connect(self.browse_db_file)
+        db_row.addWidget(browse_db)
+        layout.addLayout(db_row)
 
-        btn_layout = QHBoxLayout()
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self.browse_folder)
-        btn_layout.addWidget(browse_btn)
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        save_btn = QPushButton("Save Settings")
+        save_btn.clicked.connect(self.save_all_settings)
+        save_row.addWidget(save_btn)
+        layout.addLayout(save_row)
 
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self.save_path)
-        btn_layout.addWidget(save_btn)
-
-        layout.addLayout(btn_layout)
-
-    def browse_folder(self):
+    def browse_backup_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Backup Folder")
         if folder:
-            self.path_edit.setText(folder)
+            self.backup_edit.setText(folder)
 
-    def save_path(self):
-        path = self.path_edit.text().strip()
-        if not path:
-            QMessageBox.warning(self, "Warning", "Path cannot be empty!")
+    def browse_db_file(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Select DB File", get_db_path(), "SQLite DB (*.db)")
+        if path:
+            self.db_edit.setText(path)
+
+    def save_all_settings(self):
+        backup_path = self.backup_edit.text().strip()
+        db_path = self.db_edit.text().strip()
+
+        if not backup_path or not db_path:
+            QMessageBox.warning(self, "Warning", "Paths cannot be empty!")
             return
-        set_backup_path(path)
-        QMessageBox.information(self, "Success", "Backup path saved!")
-        self.close()
+
+        set_backup_path(backup_path)
+        save_db_path(db_path)
+
+        choice = QMessageBox.question(
+            self,
+            "Settings Saved",
+            "Settings have been updated!\n\n"
+            "✅ Save & Restart: Apply changes immediately\n"
+            "❌ Cancel: Exit without changes",
+            QMessageBox.Yes | QMessageBox.Cancel
+        )
+
+        if choice == QMessageBox.Yes:
+            os.execl(sys.executable, sys.executable, *sys.argv)
+        else:
+            self.close()
 
 class ChatWindow(QMainWindow):
     ai_response_ready = Signal(str)

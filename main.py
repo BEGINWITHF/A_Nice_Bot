@@ -14,7 +14,6 @@ def main():
         if user_input.lower() == "quit":
             break
 
-        # Show loading animation while waiting for AI response
         loader = LoadingAnimation("Responsing...")
         loader.start()
         
