@@ -138,6 +138,40 @@ class PureNeuralNetwork:
             "knowledge_level": self.knowledge_level
         }
     
+    def hebbian_learn(self, input_data, output_data):
+        """
+        Hebbian Learning: "Neurons that fire together wire together"
+        This strengthens connections between co-activated neurons
+        """
+        # Forward pass to get activations
+        hidden_activations = []
+        for j in range(self.hidden_size):
+            total = self.bias_hidden[j]
+            for i in range(self.input_size):
+                total += input_data[i] * self.weights_input_hidden[i][j]
+            hidden_activations.append(self.sigmoid(total))
+        
+        # Hebbian weight update for input-hidden connections
+        # Δw = η * pre * post (simplified Hebbian rule)
+        hebbian_rate = self.learning_rate * 0.5  # Hebbian learning is typically slower
+        
+        for i in range(self.input_size):
+            for j in range(self.hidden_size):
+                # Hebbian update: strengthen if both active
+                hebbian_delta = hidden_activations[j] * input_data[i]
+                self.weights_input_hidden[i][j] += hebbian_delta * hebbian_rate
+                # Apply weight decay to prevent unbounded growth
+                self.weights_input_hidden[i][j] *= 0.999
+        
+        # Hebbian update for hidden-output connections
+        for j in range(self.hidden_size):
+            for k in range(self.output_size):
+                hebbian_delta = output_data[k] * hidden_activations[j]
+                self.weights_hidden_output[j][k] += hebbian_delta * hebbian_rate
+                self.weights_hidden_output[j][k] *= 0.999
+        
+        return hidden_activations
+    
     def get_stats(self):
         """Get statistics about the network"""
         return {

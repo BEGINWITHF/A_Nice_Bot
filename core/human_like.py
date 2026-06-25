@@ -350,5 +350,224 @@ class HumanLikeSystem:
             "want_to_talk": self.want_to_talk,
             "dominant_emotion": max(self.emotions.items(), key=lambda x: x[1].intensity)[0],
             "personality_traits": self.personality,
-            "conversation_count": self.social_context["conversation_count"]
+            "conversation_count": self.social_context["conversation_count"],
+            "memories_consolidated": len(self.interaction_memories)
         }
+    
+    def consolidate_memories(self):
+        """
+        Memory Consolidation Process
+        Like sleep-dependent memory consolidation in the brain
+        
+        During sleep (or rest periods), memories are:
+        1. Reactivated (hippocampal replay)
+        2. Transferred to long-term storage (neocortex)
+        3. Strengthened based on emotional importance
+        4. Weak memories are pruned
+        """
+        consolidated = 0
+        
+        # Reactivate and strengthen important memories
+        for memory in self.interaction_memories:
+            importance = memory.get("importance", 0.5)
+            emotional_impact = memory.get("emotional_impact", 0.3)
+            
+            # Calculate memory strength
+            strength = importance * 0.6 + emotional_impact * 0.4
+            
+            # Strengthen strong memories
+            if strength > 0.5:
+                memory["strength"] = min(1.0, strength + 0.1)
+                consolidated += 1
+            
+            # Decay weak memories
+            if strength < 0.2:
+                memory["strength"] *= 0.8
+        
+        # Prune very weak memories (keeping at least some)
+        if len(self.interaction_memories) > 10:
+            self.interaction_memories = [
+                m for m in self.interaction_memories 
+                if m.get("strength", 0.5) > 0.1
+            ][:50]  # Keep max 50 strong memories
+        
+        self._save_state()
+        return consolidated
+    
+    def sleep_like_consolidation(self):
+        """
+        Sleep-like consolidation process
+        Simulates the brain's sleep cycle for memory consolidation
+        
+        Phases:
+        1. Slow-wave sleep: Memory replay
+        2. REM sleep: Emotional processing
+        3. Sleep spindles: Integration with existing memories
+        """
+        # Phase 1: Slow-wave sleep (memory replay)
+        replayed = self._replay_memories()
+        
+        # Phase 2: REM sleep (emotional processing)
+        emotional_processed = self._process_emotions_during_sleep()
+        
+        # Phase 3: Sleep spindles (integration)
+        integrated = self._integrate_memories()
+        
+        # Reset energy (like waking up refreshed)
+        self.energy_level = min(1.0, self.energy_level + 0.3)
+        
+        # Update mood after sleep
+        self._update_mood()
+        
+        self._save_state()
+        
+        return {
+            "replayed": replayed,
+            "emotional_processed": emotional_processed,
+            "integrated": integrated,
+            "energy_restored": self.energy_level
+        }
+    
+    def _replay_memories(self):
+        """
+        Memory Replay during sleep
+        Like hippocampal replay during slow-wave sleep
+        """
+        replayed = 0
+        
+        # Replay recent memories
+        recent_memories = self.interaction_memories[-10:] if self.interaction_memories else []
+        
+        for memory in recent_memories:
+            # Reactivate the memory
+            importance = memory.get("importance", 0.5)
+            
+            # Strengthen based on replay
+            if "replay_count" not in memory:
+                memory["replay_count"] = 0
+            memory["replay_count"] += 1
+            
+            # Increase strength with each replay
+            memory["strength"] = min(1.0, memory.get("strength", 0.5) + 0.02)
+            replayed += 1
+        
+        return replayed
+    
+    def _process_emotions_during_sleep(self):
+        """
+        Emotional processing during REM sleep
+        Like the amygdala processing emotions during dreams
+        """
+        processed = 0
+        
+        # Find emotionally charged memories
+        emotional_memories = [
+            m for m in self.interaction_memories 
+            if m.get("emotional_impact", 0) > 0.5
+        ]
+        
+        for memory in emotional_memories:
+            # Process and regulate the emotion
+            emotional_impact = memory.get("emotional_impact", 0.5)
+            
+            # Reduce extreme emotions (emotional regulation)
+            if emotional_impact > 0.8:
+                memory["emotional_impact"] = emotional_impact * 0.9
+            
+            # Increase strength of emotionally significant memories
+            memory["strength"] = min(1.0, memory.get("strength", 0.5) + 0.05)
+            processed += 1
+        
+        return processed
+    
+    def _integrate_memories(self):
+        """
+        Memory integration during sleep spindles
+        Like thalamocortical spindles connecting memories
+        """
+        integrated = 0
+        
+        # Group similar memories
+        memory_groups = {}
+        for memory in self.interaction_memories:
+            topic = memory.get("topic", "general")
+            if topic not in memory_groups:
+                memory_groups[topic] = []
+            memory_groups[topic].append(memory)
+        
+        # Integrate memories within groups
+        for topic, memories in memory_groups.items():
+            if len(memories) > 1:
+                # Create a consolidated memory
+                avg_importance = sum(m.get("importance", 0.5) for m in memories) / len(memories)
+                avg_emotional = sum(m.get("emotional_impact", 0.3) for m in memories) / len(memories)
+                
+                # Mark memories as integrated
+                for memory in memories:
+                    memory["integrated"] = True
+                    integrated += 1
+        
+        return integrated
+    
+    def store_interaction_memory(self, input_text, response, emotional_impact=0.5):
+        """
+        Store an interaction in memory for later consolidation
+        Like encoding new memories during waking hours
+        """
+        memory = {
+            "input": input_text,
+            "response": response,
+            "timestamp": datetime.now().isoformat(),
+            "emotional_impact": emotional_impact,
+            "importance": self._calculate_importance(input_text),
+            "topic": self._extract_topic(input_text),
+            "mood_at_time": self.mood,
+            "strength": 0.5,
+            "replay_count": 0,
+            "integrated": False
+        }
+        
+        self.interaction_memories.append(memory)
+        
+        # Keep only recent memories in working memory
+        if len(self.interaction_memories) > 20:
+            self.interaction_memories = self.interaction_memories[-20:]
+        
+        self._save_state()
+        return memory
+    
+    def _calculate_importance(self, text):
+        """Calculate importance of an interaction"""
+        importance = 0.3  # Base importance
+        
+        # Questions are important
+        if "?" in text:
+            importance += 0.2
+        
+        # Emotional words increase importance
+        emotional_words = ["love", "hate", "fear", "happy", "sad", "angry", "excited"]
+        for word in emotional_words:
+            if word in text.lower():
+                importance += 0.1
+        
+        # Longer inputs are more important
+        if len(text) > 50:
+            importance += 0.1
+        
+        return min(1.0, importance)
+    
+    def _extract_topic(self, text):
+        """Extract topic from text for memory organization"""
+        text_lower = text.lower()
+        
+        # Simple topic extraction
+        if any(word in text_lower for word in ["hello", "hi", "hey"]):
+            return "greeting"
+        elif any(word in text_lower for word in ["how", "what", "why", "when", "where"]):
+            return "question"
+        elif any(word in text_lower for word in ["play", "game", "fun"]):
+            return "play"
+        elif any(word in text_lower for word in ["love", "like", "feel"]):
+            return "emotional"
+        
+        return "general"

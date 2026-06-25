@@ -55,9 +55,9 @@ def test_pure_ai():
         # Learn pattern
         ai.learn_pattern(words)
         
-        # Generate response
-        response = ai.generate_response(input_text)
-        print(f"AI responds: '{response}'")
+        # Internal processing
+        ai.internal_process(input_text)
+        print(f"AI processes internally (no text output)")
         print(f"Vocabulary: {ai.vocabulary_size} words")
         print()
     

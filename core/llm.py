@@ -1,88 +1,48 @@
 """
-Pure AI Chat System with Human-Like Behavior
-No pre-loaded knowledge - everything is learned
+Pure AI - Internal Processing Only
+No text input, no text output - like a real human's mind
 """
 
 import os
 import json
 from datetime import datetime
 from core.pure_learning import PureLearningSystem
-from core.chat_history import get_global_history, add_global_message
 
 # Initialize the pure learning system
 pure_ai = PureLearningSystem()
 
-def chat(user_input, username):
+def internal_process(input_text):
     """
-    Chat with the pure AI
-    The AI has emotions, free will, and personality
+    Process input internally - no text output
+    The AI's thoughts are not readable
     """
-    # Process input through human-like system
-    pure_ai.human.process_input(user_input, username)
-    
-    # Record interaction
-    pure_ai.interactions.append({
-        "input": user_input,
-        "username": username,
-        "timestamp": datetime.now().isoformat(),
-        "mood": pure_ai.human.mood,
-        "energy": pure_ai.human.energy_level
-    })
-    
-    # Learn from input
-    input_words = user_input.lower().split()
-    
-    # Learn each word
-    for word in input_words:
-        pure_ai.learn_word(word)
-    
-    # Learn meaning from context
-    if len(input_words) >= 2:
-        for word in input_words:
-            pure_ai.learn_meaning(word, user_input)
-    
-    # Learn patterns
-    pure_ai.learn_pattern(input_words)
-    
-    # Generate response (with free will - might choose not to respond)
-    response = pure_ai.generate_response(user_input)
-    
-    # Record conversation
-    add_global_message("user", f"[{username}] {user_input}")
-    add_global_message("assistant", response)
-    
-    return response
-
-def get_ai_state():
-    """Get current state of the AI"""
-    stats = pure_ai.get_stats()
-    human_stats = pure_ai.human.get_stats()
-    return {
-        "vocabulary_size": stats["vocabulary_size"],
-        "patterns_learned": stats["patterns_learned"],
-        "concepts_learned": stats["concepts_learned"],
-        "total_interactions": stats["total_interactions"],
-        "knowledge_level": stats["knowledge_level"],
-        "mood": human_stats["mood"],
-        "mood_description": human_stats["mood_description"],
-        "energy_level": human_stats["energy_level"],
-        "energy_description": human_stats["energy_description"],
-        "want_to_talk": human_stats["want_to_talk"],
-        "dominant_emotion": human_stats["dominant_emotion"],
-    }
-
-def get_ai_stats():
-    """Get detailed statistics"""
-    return pure_ai.get_stats()
+    return pure_ai.internal_process(input_text)
 
 def get_mood():
-    """Get current mood"""
-    return pure_ai.human.get_mood_description()
+    """Get current mood (for internal use only)"""
+    return pure_ai.human.mood
 
 def get_energy():
-    """Get current energy level"""
-    return pure_ai.human.get_energy_description()
+    """Get current energy level (for internal use only)"""
+    return pure_ai.human.energy_level
 
 def wants_to_talk():
     """Check if AI wants to respond (free will)"""
     return pure_ai.human.should_respond()
+
+def consolidate_memories():
+    """Consolidate memories during sleep"""
+    return pure_ai.human.consolidate_memories()
+
+def sleep():
+    """Sleep-like consolidation process"""
+    return consolidate_memories()
+
+def get_internal_state():
+    """Get internal state (not shown to user)"""
+    return {
+        "mood": pure_ai.human.mood,
+        "energy": pure_ai.human.energy_level,
+        "vocabulary": len(pure_ai.vocabulary),
+        "memories": len(pure_ai.human.interaction_memories)
+    }

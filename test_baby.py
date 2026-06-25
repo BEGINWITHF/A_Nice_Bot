@@ -40,8 +40,8 @@ def test_baby_brain():
     
     for i, input_text in enumerate(test_inputs):
         print(f"Interaction {i+1}: '{input_text}'")
-        response = baby.generate_response(input_text, "TestUser")
-        print(f"Baby responds: '{response}'")
+        baby.internal_process(input_text, "TestUser")
+        print(f"Baby processes internally (no text output)")
         print(f"Current stage: {baby.stage.name}")
         print()
     

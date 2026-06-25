@@ -1,6 +1,7 @@
 """
-Sensory System - Integrates hearing and seeing
-The AI experiences the world through hearing and seeing
+Sensory System - Pure sensory experience only
+The AI experiences the world ONLY through hearing and seeing
+No text input, no text output - like a real human baby
 """
 
 import json
@@ -123,6 +124,32 @@ class SensorySystem:
         self.sensory_load = max(0.0, self.sensory_load - 0.5)
         self.awareness_level = min(1.0, self.awareness_level + 0.2)
         self._save_state()
+    
+    def sleep_like_consolidation(self):
+        """
+        Sleep-like memory consolidation
+        Consolidates memories from all sensory systems
+        Like the brain during sleep
+        """
+        # Consolidate hearing memories
+        hearing_consolidated = self.hearing.consolidate_auditory_memory()
+        
+        # Consolidate visual memories
+        seeing_consolidated = self.seeing.consolidate_visual_memory()
+        
+        # Reset sensory fatigue
+        self.fatigue_level = max(0.0, self.fatigue_level - 0.5)
+        self.sensory_load = 0.0
+        self.awareness_level = min(1.0, self.awareness_level + 0.3)
+        
+        self._save_state()
+        
+        return {
+            "hearing_consolidated": hearing_consolidated,
+            "seeing_consolidated": seeing_consolidated,
+            "fatigue_reset": self.fatigue_level,
+            "awareness_restored": self.awareness_level
+        }
     
     def get_overall_state(self):
         """Get overall sensory state"""

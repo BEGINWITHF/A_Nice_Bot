@@ -1,6 +1,6 @@
 """
-Truly Pure Learning System with Human-Like Behavior
-No External Libraries - Pure Python
+Truly Pure Learning System - Sensory Experience Only
+No text input, no text output - like a real human baby
 """
 
 import math
@@ -10,6 +10,8 @@ import os
 from datetime import datetime
 from core.pure_network import PureNeuralNetwork
 from core.human_like import HumanLikeSystem
+from core.hearing import HearingSystem
+from core.seeing import SeeingSystem
 
 class PureLearningSystem:
     """
@@ -23,6 +25,10 @@ class PureLearningSystem:
         
         # Human-like system
         self.human = HumanLikeSystem(data_dir=os.path.join(data_dir, "human"))
+        
+        # Sensory systems
+        self.hearing = HearingSystem(data_dir=os.path.join(data_dir, "hearing"))
+        self.seeing = SeeingSystem(data_dir=os.path.join(data_dir, "seeing"))
         
         # Vocabulary - starts empty
         self.word_to_index = {"<UNK>": 0, "<PAD>": 1, "<START>": 2, "<END>": 3}
@@ -189,101 +195,36 @@ class PureLearningSystem:
         
         self._save_state()
     
-    def generate_response(self, input_text):
+    def internal_process(self, input_text):
         """
-        Generate a human-like response
-        Based on emotions, mood, personality, and learned words
+        Process input internally - no text output
+        Like a human thinking silently
         """
         # Learn words from input
         input_words = input_text.lower().split()
         for word in input_words:
             self.learn_word(word)
         
-        # Check if wants to respond (free will)
-        if not self.human.should_respond():
-            # AI chooses not to respond
-            reasons = [
-                "stays silent",
-                "doesn't want to talk right now",
-                "is thinking",
-                "is tired",
-                "is not in the mood"
-            ]
-            return f"[{random.choice(reasons)}]"
+        # Process through human-like system
+        self.human.process_input(input_text, "world")
         
-        # Get response modifiers based on mood
-        modifiers = self.human.get_response_modifier()
+        # Internal state changes happen silently
+        # No text response generated
+        return None
+    
+    def hear_word(self, sound):
+        """
+        Process a sound heard through microphone
+        Like a baby hearing sounds
+        """
+        # Learn the sound
+        self.learn_word(sound)
         
-        # Get learned words
-        learned_words = [w for w in self.word_to_index.keys() 
-                        if w not in ("<UNK>", "<PAD>", "<START>", "<END>")]
+        # Process through hearing system
+        self.hearing.hear_sound(sound)
         
-        # Generate response based on mood and vocabulary
-        if len(learned_words) == 0:
-            # Knows nothing - make a sound based on mood
-            if self.human.mood == "happy":
-                return random.choice(["!", "~", "^_^"])
-            elif self.human.mood == "sad":
-                return random.choice(["...", "sigh"])
-            elif self.human.mood == "angry":
-                return random.choice(["!", ">_<"])
-            elif self.human.mood == "curious":
-                return random.choice(["?", "..."])
-            else:
-                return random.choice(["...", ".", "?"])
-        
-        elif len(learned_words) <= 3:
-            # Just starting - repeat with emotion
-            word = random.choice(learned_words)
-            if self.human.mood == "happy":
-                return f"{word}!"
-            elif self.human.mood == "curious":
-                return f"{word}?"
-            return word
-        
-        elif len(learned_words) <= 10:
-            # Can form simple combinations
-            if len(learned_words) >= 2:
-                words = random.sample(learned_words, 2)
-                if modifiers["enthusiasm"] > 0.7:
-                    return f"{words[0]} {words[1]}!"
-                elif modifiers["enthusiasm"] < 0.3:
-                    return f"{words[0]}... {words[1]}"
-                return f"{words[0]} {words[1]}"
-        
-        elif len(learned_words) <= 20:
-            # Can form phrases
-            if len(learned_words) >= 3:
-                words = random.sample(learned_words, 3)
-                if self.human.mood == "curious":
-                    return f"{words[0]} {words[1]} {words[2]}?"
-                elif self.human.mood == "happy":
-                    return f"{words[0]} {words[1]} {words[2]}!"
-                return f"{words[0]} {words[1]} {words[2]}"
-        
-        else:
-            # Can form sentences
-            if self.patterns and random.random() > 0.5:
-                pattern = random.choice(self.patterns)
-                response = f"{pattern['from']} {pattern['to']}"
-                
-                # Add emotional expression
-                if self.human.mood == "happy":
-                    response += "!"
-                elif self.human.mood == "curious":
-                    response += "?"
-                
-                return response
-            elif len(learned_words) >= 3:
-                words = random.sample(learned_words, min(5, len(learned_words)))
-                
-                # Apply personality
-                if self.human.personality["playfulness"] > 0.7:
-                    words = [w.upper() if random.random() > 0.5 else w for w in words]
-                
-                return " ".join(words)
-        
-        return ""
+        # Internal state changes happen silently
+        return None
     
     def get_stats(self):
         """Get learning statistics"""

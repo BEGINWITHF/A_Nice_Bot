@@ -1,6 +1,6 @@
 """
-Baby Brain - The complete learning system
-No pre-loaded knowledge - everything is learned
+Baby Brain - Internal Processing Only
+No text input, no text output - like a real human baby
 """
 
 import json
@@ -174,13 +174,13 @@ class BabyBrain:
             "known_people": len(self.known_people)
         }
     
-    def generate_response(self, user_input, username):
+    def internal_process(self, input_text, username):
         """
-        Generate response based on what has been learned.
-        No pre-loaded responses - everything comes from experience.
+        Process input internally - no text output
+        The AI's thoughts are not readable
         """
         # Record interaction
-        self.record_experience("social", user_input, {"from": username})
+        self.record_experience("social", input_text, {"from": username})
         
         # Update known person
         if username not in self.known_people:
@@ -189,45 +189,10 @@ class BabyBrain:
         self.add_trust(0.5)
         
         # Learn words from input
-        words = user_input.lower().split()
+        words = input_text.lower().split()
         for word in words:
             if len(word) > 2:
                 self.learn_word(word)
         
-        # Generate response based ONLY on what has been learned
-        # No hardcoded sounds, no pre-defined responses
-        
-        if len(self.vocabulary) == 0:
-            # Knows nothing - can only make random sounds
-            # But even these should be random, not pre-defined
-            return chr(random.randint(97, 122))  # Random letter
-        
-        elif len(self.vocabulary) <= 3:
-            # Just starting to learn - repeat what it's heard
-            learned_words = list(self.vocabulary)
-            if learned_words:
-                return random.choice(learned_words)
-        
-        elif len(self.vocabulary) <= 10:
-            # Can form simple combinations
-            learned_words = list(self.vocabulary)
-            if len(learned_words) >= 2:
-                return " ".join(random.sample(learned_words, 2))
-        
-        elif len(self.vocabulary) <= 20:
-            # Can form phrases
-            learned_words = list(self.vocabulary)
-            if len(learned_words) >= 3:
-                return " ".join(random.sample(learned_words, 3))
-        
-        else:
-            # Can form sentences from learned words
-            learned_words = list(self.vocabulary)
-            if self.patterns:
-                # Use learned patterns
-                pattern = random.choice(self.patterns)
-                return f"{pattern['from']} {pattern['to']}"
-            elif len(learned_words) >= 3:
-                return " ".join(random.sample(learned_words, min(5, len(learned_words))))
-        
-        return ""
+        # Internal state changes happen silently
+        return None

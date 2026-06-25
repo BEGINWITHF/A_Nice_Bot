@@ -1,102 +1,161 @@
 """
-Pure AI - Sensory Experience
-The AI experiences the world through hearing and seeing (camera)
+Pure AI - Sensory Experience Only
+The AI experiences the world ONLY through hearing and seeing
+No text input, no text output - like a real human baby
 """
 
+import cv2
+import numpy as np
+import os
+import time
+import sys
+from datetime import datetime
 from core.sensory import SensorySystem
 from core.pure_learning import PureLearningSystem
-from ui.cli_loader import LoadingAnimation
 
 # Initialize systems
 senses = SensorySystem()
 brain = PureLearningSystem()
 
+class MicrophoneInput:
+    """Handles microphone input for hearing"""
+    def __init__(self):
+        self.available = False
+        try:
+            import pyaudio
+            self.pyaudio = pyaudio
+            self.audio = pyaudio.PyAudio()
+            self.chunk = 1024
+            self.format = pyaudio.paInt16
+            self.channels = 1
+            self.rate = 44100
+            self.available = True
+        except ImportError:
+            print("pyaudio not installed. Install with: pip install pyaudio")
+    
+    def listen(self, duration=2):
+        """Listen for sounds"""
+        if not self.available:
+            return None
+        
+        try:
+            stream = self.audio.open(format=self.format,
+                                   channels=self.channels,
+                                   rate=self.rate,
+                                   input=True,
+                                   frames_per_buffer=self.chunk)
+            
+            frames = []
+            for _ in range(0, int(self.rate / self.chunk * duration)):
+                data = stream.read(self.chunk)
+                frames.append(data)
+            
+            stream.stop_stream()
+            stream.close()
+            
+            # Convert to numpy array
+            audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
+            
+            # Analyze sound
+            volume = np.abs(audio_data).mean() / 32768.0
+            return {"volume": float(volume), "data": audio_data}
+        except Exception as e:
+            return None
+
+class CameraInput:
+    """Handles camera input for seeing"""
+    def __init__(self):
+        self.available = False
+        try:
+            cap = cv2.VideoCapture(0)
+            if cap.isOpened():
+                self.available = True
+                cap.release()
+        except:
+            pass
+    
+    def capture(self):
+        """Capture a frame"""
+        if not self.available:
+            return None
+        
+        try:
+            cap = cv2.VideoCapture(0)
+            ret, frame = cap.read()
+            cap.release()
+            if ret:
+                return frame
+        except:
+            pass
+        return None
+
 def main():
     """
-    Main entry point.
-    The AI experiences the world through hearing and camera.
+    Main loop - AI experiences world through senses only
+    No text input, no text output
     """
-    print("=" * 50)
+    # Initialize sensory inputs
+    mic = MicrophoneInput()
+    camera = CameraInput()
+    
     print("PURE AI - Sensory Experience")
-    print("=" * 50)
-    print("I experience the world through hearing and seeing.")
+    print("=" * 40)
+    print("Microphone:", "Ready" if mic.available else "Not available")
+    print("Camera:", "Ready" if camera.available else "Not available")
     print()
-    print("Commands:")
-    print("  hear [sound]     - I hear a sound")
-    print("  see              - I look through camera")
-    print("  rest             - I rest and recover")
-    print("  stats            - Show my sensory stats")
-    print("  quit             - Exit")
-    print("=" * 50)
+    print("The AI is experiencing the world...")
+    print("Press Ctrl+C to stop")
+    print("=" * 40)
     print()
     
-    while True:
-        user_input = input("Sense: ")
-        
-        if user_input.lower() == "quit":
-            print("Goodbye! I will remember what I experienced.")
-            break
-        
-        if user_input.lower() == "stats":
-            stats = senses.get_stats()
-            print("\n--- Sensory Statistics ---")
-            print("Awareness:", stats["awareness_level"])
-            print("Sensory Load:", stats["sensory_load"])
-            print("Fatigue:", stats["fatigue_level"])
-            print("Hearing:", stats["hearing"]["total_sounds_heard"], "sounds heard")
-            print("Camera:", "available" if stats["seeing"]["camera_available"] else "not available")
-            print("Things seen:", stats["seeing"]["total_things_seen"])
-            print()
-            continue
-        
-        if user_input.lower() == "rest":
-            senses.rest()
-            print("I rest and recover...")
-            print()
-            continue
-        
-        if user_input.lower() == "see":
-            print("Looking through camera...")
-            result = senses.see_camera()
+    # Main sensory loop
+    try:
+        cycle = 0
+        while True:
+            cycle += 1
             
-            if "error" in result:
-                print("Error:", result["error"])
-            else:
-                print("I see:")
-                if result.get("analysis"):
-                    analysis = result["analysis"]
-                    if analysis.get("colors"):
-                        print("  Colors:", ", ".join(analysis["colors"]))
-                    if analysis.get("objects"):
-                        print("  Objects:", ", ".join(analysis["objects"]))
-                    print("  Brightness:", analysis.get("brightness", 0))
-                print("  Saved to:", result.get("filename", "unknown"))
-            print()
-            continue
-        
-        if user_input.lower().startswith("hear "):
-            sound = user_input[5:]
-            result = senses.hear_sound(sound)
-            print("I heard:", sound)
+            # 1. SEE - Camera captures environment
+            if camera.available:
+                frame = camera.capture()
+                if frame is not None:
+                    # Process through sensory system
+                    result = senses.see_camera()
+                    
+                    # AI's internal processing (silent)
+                    if result and "analysis" in result:
+                        # Internal state updates
+                        brain.seeing._analyze_frame(frame)
             
-            # Process through brain
-            brain.learn_word(sound)
-            response = brain.generate_response(sound)
-            if response:
-                print("I respond:", response)
-        
-        else:
-            # Default: treat as hearing
-            result = senses.hear_sound(user_input)
-            print("I heard:", user_input)
+            # 2. HEAR - Microphone captures sounds
+            if mic.available:
+                sound = mic.listen(duration=1)
+                if sound and sound["volume"] > 0.01:  # Above silence threshold
+                    # Process through sensory system
+                    result = senses.hear_sound("sound", volume=sound["volume"])
+                    
+                    # AI's internal processing (silent)
+                    brain.hear_word("sound")
             
-            # Process through brain
-            brain.learn_word(user_input)
-            response = brain.generate_response(user_input)
-            if response:
-                print("I respond:", response)
-        
+            # 3. REST - Brief pause between sensing
+            time.sleep(0.5)
+            
+            # Print minimal status (no internal thoughts)
+            if cycle % 20 == 0:  # Every 10 seconds
+                stats = senses.get_overall_state()
+                sys.stdout.write(f"\rAwareness: {stats['awareness_level']:.2f} | ")
+                sys.stdout.write(f"Load: {stats['sensory_load']:.2f} | ")
+                sys.stdout.write(f"Cycle: {cycle}")
+                sys.stdout.flush()
+            
+    except KeyboardInterrupt:
         print()
+        print()
+        print("Stopping sensory experience...")
+        print("The AI keeps its memories.")
+        
+        # Save state
+        senses._save_state()
+        brain._save_state()
 
 if __name__ == "__main__":
     main()
