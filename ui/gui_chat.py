@@ -1,11 +1,17 @@
+"""
+Pure AI Chat Interface
+Shows the AI's learning progress and allows interaction
+No pre-trained models - just pure learning
+"""
+
 import threading
 import sys
 import os
 from PySide6.QtWidgets import *
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QCursor
+from PySide6.QtGui import QCursor, QFont
 from ui.bubbles import BubbleWidget, NameLabel
-from core.llm import chat
+from core.llm import chat, get_ai_state, get_ai_stats
 from core.backup_manager import one_click_backup
 from configs.settings import get_backup_path, set_backup_path, get_db_path, save_db_path
 
@@ -30,6 +36,105 @@ class HoverButton(QPushButton):
                 background: #007acc;
             }
         """)
+
+class PureAIStatusWidget(QWidget):
+    """Widget showing the pure AI's learning status"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.init_ui()
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_status)
+        self.update_timer.start(1000)  # Update every second
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        
+        # Title
+        title = QLabel("Pure AI Status")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 14px; color: #007acc; font-weight: bold;")
+        layout.addWidget(title)
+        
+        # Mood
+        self.mood_label = QLabel("Mood: neutral")
+        self.mood_label.setStyleSheet("color: #eee; font-size: 12px;")
+        layout.addWidget(self.mood_label)
+        
+        # Energy
+        self.energy_label = QLabel("Energy: normal")
+        self.energy_label.setStyleSheet("color: #eee; font-size: 11px;")
+        layout.addWidget(self.energy_label)
+        
+        # Want to talk
+        self.talk_label = QLabel("Wants to talk: yes")
+        self.talk_label.setStyleSheet("color: #eee; font-size: 11px;")
+        layout.addWidget(self.talk_label)
+        
+        # Separator
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #333;")
+        layout.addWidget(line)
+        
+        # Stats
+        stats_title = QLabel("Learning Statistics")
+        stats_title.setStyleSheet("color: #007acc; font-size: 12px; font-weight: bold;")
+        layout.addWidget(stats_title)
+        
+        self.vocab_label = QLabel("Vocabulary: 0 words")
+        self.vocab_label.setStyleSheet("color: #eee; font-size: 11px;")
+        layout.addWidget(self.vocab_label)
+        
+        self.patterns_label = QLabel("Patterns: 0 learned")
+        self.patterns_label.setStyleSheet("color: #eee; font-size: 11px;")
+        layout.addWidget(self.patterns_label)
+        
+        self.concepts_label = QLabel("Concepts: 0 understood")
+        self.concepts_label.setStyleSheet("color: #eee; font-size: 11px;")
+        layout.addWidget(self.concepts_label)
+        
+        self.interactions_label = QLabel("Interactions: 0")
+        self.interactions_label.setStyleSheet("color: #eee; font-size: 11px;")
+        layout.addWidget(self.interactions_label)
+        
+        self.knowledge_label = QLabel("Knowledge: 0.00%")
+        self.knowledge_label.setStyleSheet("color: #eee; font-size: 11px;")
+        layout.addWidget(self.knowledge_label)
+        
+        layout.addStretch()
+    
+    def update_status(self):
+        """Update the status display"""
+        try:
+            stats = get_ai_stats()
+            human_stats = stats.get("human_like", {})
+            
+            # Update mood
+            mood = human_stats.get("mood", "neutral")
+            mood_desc = human_stats.get("mood_description", "calm")
+            self.mood_label.setText(f"Mood: {mood} ({mood_desc})")
+            
+            # Update energy
+            energy = human_stats.get("energy_level", 0.5)
+            energy_desc = human_stats.get("energy_description", "normal")
+            self.energy_label.setText(f"Energy: {energy_desc} ({energy:.0%})")
+            
+            # Update want to talk
+            want_to_talk = human_stats.get("want_to_talk", True)
+            self.talk_label.setText(f"Wants to talk: {'yes' if want_to_talk else 'no'}")
+            
+            # Update learning stats
+            self.vocab_label.setText(f"Vocabulary: {stats['vocabulary_size']} words")
+            self.patterns_label.setText(f"Patterns: {stats['patterns_learned']} learned")
+            self.concepts_label.setText(f"Concepts: {stats['concepts_learned']} understood")
+            self.interactions_label.setText(f"Interactions: {stats['total_interactions']}")
+            
+            knowledge_pct = stats['knowledge_level'] * 100
+            self.knowledge_label.setText(f"Knowledge: {knowledge_pct:.2f}%")
+        except:
+            pass
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -95,8 +200,8 @@ class SettingsDialog(QDialog):
             self,
             "Settings Saved",
             "Settings have been updated!\n\n"
-            "✅ Save & Restart: Apply changes immediately\n"
-            "❌ Cancel: Exit without changes",
+            "Save & Restart: Apply changes immediately\n"
+            "Cancel: Exit without changes",
             QMessageBox.Yes | QMessageBox.Cancel
         )
 
@@ -110,9 +215,9 @@ class ChatWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Diles F Chat")
-        self.resize(900, 650)
-        self.ai_name = "Diles F"
+        self.setWindowTitle("Pure AI - Sensory Experience")
+        self.resize(1000, 700)
+        self.ai_name = "Pure AI"
         self.settings_dialog = SettingsDialog(self)
         self.init_ui()
         self.ai_response_ready.connect(self.show_ai_message)
@@ -124,26 +229,34 @@ class ChatWindow(QMainWindow):
         main_layout.setContentsMargins(0,0,0,0)
         main_layout.setSpacing(0)
 
+        # Left sidebar - AI status
         self.sidebar = QFrame()
         self.sidebar.setStyleSheet("background-color:#1a1c20; border-right:1px solid #333;")
-        self.sidebar.setFixedWidth(210)
+        self.sidebar.setFixedWidth(220)
         sl = QVBoxLayout(self.sidebar)
         sl.setContentsMargins(10,16,10,10)
         sl.setSpacing(8)
 
-        title = QLabel("Diles F Chat")
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size:17px; color:#eee;")
-        sl.addWidget(title)
-        sl.addWidget(QLabel("Active User"))
+        # AI status widget
+        self.ai_status = PureAIStatusWidget()
+        sl.addWidget(self.ai_status)
+
+        # User input
+        sl.addWidget(QLabel("Your Name (Teacher):"))
         self.user_input = QLineEdit()
-        self.user_input.setPlaceholderText("Enter username...")
+        self.user_input.setPlaceholderText("Enter your name...")
         self.user_input.setStyleSheet("""
             QLineEdit {background:#2b2d34; color:#fff; padding:8px; border:none; border-radius:7px;}
             QLineEdit:focus {border:1px solid #007acc; background:#32343a;}
         """)
         sl.addWidget(self.user_input)
 
+        # Camera button
+        self.camera_btn = HoverButton("Look Through Camera")
+        self.camera_btn.clicked.connect(self.look_through_camera)
+        sl.addWidget(self.camera_btn)
+
+        # Buttons
         backup_btn = HoverButton("One-Click Backup")
         backup_btn.clicked.connect(self.do_backup)
         sl.addWidget(backup_btn)
@@ -158,6 +271,7 @@ class ChatWindow(QMainWindow):
         sl.addStretch()
         main_layout.addWidget(self.sidebar)
 
+        # Chat area
         chat_area = QVBoxLayout()
         chat_area.setContentsMargins(14,14,14,14)
         chat_area.setSpacing(10)
@@ -175,7 +289,7 @@ class ChatWindow(QMainWindow):
         input_row = QHBoxLayout()
         input_row.setSpacing(8)
         self.input_box = QLineEdit()
-        self.input_box.setPlaceholderText("Type your message...")
+        self.input_box.setPlaceholderText("Say something for the AI to hear...")
         self.input_box.setStyleSheet("padding:12px; border-radius:14px; background:#2b2d34; color:#fff; border:none;")
         self.send_btn = QPushButton("Send")
         self.send_btn.setCursor(Qt.PointingHandCursor)
@@ -196,13 +310,37 @@ class ChatWindow(QMainWindow):
 
         main_layout.addLayout(chat_area, stretch=1)
 
+    def look_through_camera(self):
+        """AI looks through camera"""
+        self.loading.setText("Looking through camera...")
+        threading.Thread(target=self.camera_worker, daemon=True).start()
+
+    def camera_worker(self):
+        """Camera capture worker"""
+        try:
+            from core.sensory import SensorySystem
+            senses = SensorySystem()
+            result = senses.see_camera()
+            
+            if "error" in result:
+                reply = f"Camera error: {result['error']}"
+            else:
+                analysis = result.get("analysis", {})
+                colors = ", ".join(analysis.get("colors", [])) if analysis.get("colors") else "none"
+                objects = ", ".join(analysis.get("objects", [])) if analysis.get("objects") else "none"
+                reply = f"I see: colors({colors}), objects({objects})"
+            
+            self.ai_response_ready.emit(reply)
+        except Exception as e:
+            self.ai_response_ready.emit(f"Error: {str(e)}")
+
     def get_username(self):
         return self.user_input.text().strip()
 
     def send_message(self):
         username = self.get_username()
         if not username:
-            QMessageBox.warning(self, "Warning", "Please enter a username first!")
+            QMessageBox.warning(self, "Warning", "Please enter your name first!")
             return
 
         txt = self.input_box.text().strip()
@@ -211,7 +349,7 @@ class ChatWindow(QMainWindow):
 
         self.add_message(txt, is_user=True)
         self.input_box.clear()
-        self.loading.setText("Diles F is thinking...")
+        self.loading.setText("AI is learning...")
         self.send_btn.setEnabled(False)
         threading.Thread(target=self.worker, args=(txt, username), daemon=True).start()
 
@@ -250,8 +388,8 @@ class ChatWindow(QMainWindow):
     def worker(self, text, username):
         try:
             reply = chat(text, username)
-        except:
-            reply = "Error"
+        except Exception as e:
+            reply = f"Error: {str(e)}"
         self.ai_response_ready.emit(reply)
 
     def show_ai_message(self, text):

@@ -1,6 +1,7 @@
 """
-Pure AI Chat System with Human-Like Behavior
-No pre-loaded knowledge - everything is learned
+Pure AI Chat System
+No Ollama, no pre-trained models
+Just pure learning from scratch
 """
 
 import os
@@ -15,18 +16,13 @@ pure_ai = PureLearningSystem()
 def chat(user_input, username):
     """
     Chat with the pure AI
-    The AI has emotions, free will, and personality
+    The AI learns and responds based on what it has learned
     """
-    # Process input through human-like system
-    pure_ai.human.process_input(user_input, username)
-    
     # Record interaction
     pure_ai.interactions.append({
         "input": user_input,
         "username": username,
-        "timestamp": datetime.now().isoformat(),
-        "mood": pure_ai.human.mood,
-        "energy": pure_ai.human.energy_level
+        "timestamp": datetime.now().isoformat()
     })
     
     # Learn from input
@@ -44,7 +40,7 @@ def chat(user_input, username):
     # Learn patterns
     pure_ai.learn_pattern(input_words)
     
-    # Generate response (with free will - might choose not to respond)
+    # Generate response
     response = pure_ai.generate_response(user_input)
     
     # Record conversation
@@ -56,33 +52,14 @@ def chat(user_input, username):
 def get_ai_state():
     """Get current state of the AI"""
     stats = pure_ai.get_stats()
-    human_stats = pure_ai.human.get_stats()
     return {
         "vocabulary_size": stats["vocabulary_size"],
         "patterns_learned": stats["patterns_learned"],
         "concepts_learned": stats["concepts_learned"],
         "total_interactions": stats["total_interactions"],
-        "knowledge_level": stats["knowledge_level"],
-        "mood": human_stats["mood"],
-        "mood_description": human_stats["mood_description"],
-        "energy_level": human_stats["energy_level"],
-        "energy_description": human_stats["energy_description"],
-        "want_to_talk": human_stats["want_to_talk"],
-        "dominant_emotion": human_stats["dominant_emotion"],
+        "knowledge_level": stats["knowledge_level"]
     }
 
 def get_ai_stats():
     """Get detailed statistics"""
     return pure_ai.get_stats()
-
-def get_mood():
-    """Get current mood"""
-    return pure_ai.human.get_mood_description()
-
-def get_energy():
-    """Get current energy level"""
-    return pure_ai.human.get_energy_description()
-
-def wants_to_talk():
-    """Check if AI wants to respond (free will)"""
-    return pure_ai.human.should_respond()

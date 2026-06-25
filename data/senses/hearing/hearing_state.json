@@ -1,0 +1,38 @@
+{
+  "hearing_sensitivity": 0.304,
+  "known_sounds": {
+    "hello": {
+      "first_heard": "2026-06-25T15:45:05.041497",
+      "times_heard": 2,
+      "meaning": null
+    },
+    "world": {
+      "first_heard": "2026-06-25T15:45:05.045499",
+      "times_heard": 2,
+      "meaning": null
+    }
+  },
+  "words_recognized": [
+    {
+      "word": "hello",
+      "confidence": 0.3,
+      "timestamp": "2026-06-25T15:45:05.041497"
+    },
+    {
+      "word": "world",
+      "confidence": 0.24080000000000001,
+      "timestamp": "2026-06-25T15:45:05.045499"
+    },
+    {
+      "word": "hello",
+      "confidence": 0.302,
+      "timestamp": "2026-06-25T15:52:25.501899"
+    },
+    {
+      "word": "world",
+      "confidence": 0.2424,
+      "timestamp": "2026-06-25T15:52:25.552612"
+    }
+  ],
+  "last_updated": "2026-06-25T15:52:25.552612"
+}

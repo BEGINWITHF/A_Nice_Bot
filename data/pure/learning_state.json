@@ -1,0 +1,112 @@
+{
+  "word_to_index": {
+    "<UNK>": 0,
+    "<PAD>": 1,
+    "<START>": 2,
+    "<END>": 3,
+    "hi": 4,
+    "hello": 5,
+    "what": 6,
+    "is": 7,
+    "apple": 8,
+    "a": 9,
+    "companet": 10,
+    "an": 11
+  },
+  "index_to_word": {
+    "0": "<UNK>",
+    "1": "<PAD>",
+    "2": "<START>",
+    "3": "<END>",
+    "4": "hi",
+    "5": "hello",
+    "6": "what",
+    "7": "is",
+    "8": "apple",
+    "9": "a",
+    "10": "companet",
+    "11": "an"
+  },
+  "word_frequency": {
+    "hi": 5,
+    "hello": 3,
+    "what": 4,
+    "is": 7,
+    "apple": 7,
+    "a": 3,
+    "companet": 3,
+    "an": 2
+  },
+  "vocabulary_size": 12,
+  "patterns": [
+    {
+      "from": "what",
+      "to": "is",
+      "strength": 2,
+      "learned_at": "2026-06-24T22:01:39.084932"
+    },
+    {
+      "from": "is",
+      "to": "apple",
+      "strength": 1,
+      "learned_at": "2026-06-24T22:01:39.084932"
+    },
+    {
+      "from": "apple",
+      "to": "is",
+      "strength": 1,
+      "learned_at": "2026-06-24T23:16:25.033488"
+    },
+    {
+      "from": "is",
+      "to": "a",
+      "strength": 1,
+      "learned_at": "2026-06-24T23:16:25.033488"
+    },
+    {
+      "from": "a",
+      "to": "companet",
+      "strength": 1,
+      "learned_at": "2026-06-24T23:16:25.033488"
+    },
+    {
+      "from": "is",
+      "to": "an",
+      "strength": 1,
+      "learned_at": "2026-06-24T23:16:36.971888"
+    },
+    {
+      "from": "an",
+      "to": "apple",
+      "strength": 1,
+      "learned_at": "2026-06-24T23:16:36.971888"
+    }
+  ],
+  "concepts": {
+    "what": {
+      "context": "what is an apple",
+      "learned_at": "2026-06-24T23:16:36.921947"
+    },
+    "is": {
+      "context": "what is an apple",
+      "learned_at": "2026-06-24T23:16:36.934949"
+    },
+    "apple": {
+      "context": "what is an apple",
+      "learned_at": "2026-06-24T23:16:36.959869"
+    },
+    "a": {
+      "context": "apple is a companet",
+      "learned_at": "2026-06-24T23:16:25.008502"
+    },
+    "companet": {
+      "context": "apple is a companet",
+      "learned_at": "2026-06-24T23:16:25.021486"
+    },
+    "an": {
+      "context": "what is an apple",
+      "learned_at": "2026-06-24T23:16:36.946946"
+    }
+  },
+  "last_updated": "2026-06-25T00:17:08.347266"
+}
