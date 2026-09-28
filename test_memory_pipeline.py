@@ -15,7 +15,12 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.memory_pipeline import MemoryPipeline, _fingerprint
+from core.memory_pipeline import (
+    MemoryPipeline,
+    _fingerprint,
+    audio_salience,
+    visual_salience,
+)
 from core.hearing import HearingSystem
 from core.seeing import SeeingSystem
 from core.human_like import HumanLikeSystem
@@ -337,3 +342,49 @@ def test_sensory_history_is_capped(tmp_path):
 
     assert len(s.sensory_history) == 100
     assert s.sensory_load == 0.0
+
+
+# ---------------------------------------------------------------------------
+# CAP-7: the host computes salience from raw observations
+# ---------------------------------------------------------------------------
+
+def test_a_frame_with_nothing_new_is_not_memorised(tmp_path):
+    """The whole reason the gate exists: boring frames never reach memory."""
+    p = new_pipeline(tmp_path)
+
+    salience = visual_salience([])
+    assert salience < p.policy["min_salience"]
+    assert p.record("seeing", {"objects": []}, salience=salience) is None
+
+
+def test_a_fresh_object_is_more_salient_than_a_familiar_one():
+    known = {"cup": {"times_seen": 1}, "plate": {"times_seen": 50}}
+
+    assert visual_salience(["cup"], known) > visual_salience(["plate"], known)
+    assert visual_salience(["cup", "plate", "bowl"], known) > \
+        visual_salience(["cup"], known)
+
+
+def test_visual_salience_is_bounded():
+    assert visual_salience([]) == 0.2
+    assert 0.0 <= visual_salience(["x"]) <= 1.0
+    assert visual_salience([f"o{i}" for i in range(100)]) == 1.0
+
+
+def test_quiet_sound_is_not_memorised(tmp_path):
+    p = new_pipeline(tmp_path)
+
+    assert audio_salience(0.02) < p.policy["min_salience"]
+    assert p.record("hearing", {"volume_band": 0},
+                    salience=audio_salience(0.02)) is None
+
+
+def test_loud_sound_is_memorised_and_louder_is_stronger(tmp_path):
+    p = new_pipeline(tmp_path)
+
+    quiet, loud = audio_salience(0.05), audio_salience(0.6)
+    assert quiet < loud
+    assert p.record("hearing", {"volume_band": 1}, salience=quiet) is None
+    assert p.record("hearing", {"volume_band": 12}, salience=loud) is not None
+    assert audio_salience(9.0) == 1.0
+    assert audio_salience(-1.0) == 0.0

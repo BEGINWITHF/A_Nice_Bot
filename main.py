@@ -12,7 +12,7 @@ import sys
 from datetime import datetime
 from core.sensory import SensorySystem
 from core.pure_learning import PureLearningSystem
-from core.memory_pipeline import MemoryPipeline
+from core.memory_pipeline import MemoryPipeline, visual_salience, audio_salience
 
 # Initialize systems
 senses = SensorySystem()
@@ -154,17 +154,13 @@ def main():
                     if result and "analysis" in result:
                         # Internal state updates
                         brain.seeing._analyze_frame(frame)
-                        # Salience gate: a frame that shows nothing new is not worth keeping
+                        # Salience gate (CAP-7): the host decides what is worth
+                        # keeping, a frame with nothing new is not memorised
                         objects = result["analysis"].get("it_objects") or []
-                        fresh = sum(
-                            1 for o in objects
-                            if senses.seeing.known_objects.get(o, {}).get("times_seen", 0) == 1
-                        )
-                        salience = 0.2 + 0.2 * fresh + 0.05 * len(objects)
                         pipeline.record(
                             "seeing",
                             {"objects": sorted(objects)},
-                            salience=min(1.0, salience),
+                            salience=visual_salience(objects, senses.seeing.known_objects),
                         )
             
             # 2. HEAR - Microphone captures sounds
@@ -181,7 +177,7 @@ def main():
                     pipeline.record(
                         "hearing",
                         {"volume_band": int(volume * 20)},
-                        salience=min(1.0, volume * 3.0),
+                        salience=audio_salience(volume),
                     )
             
             # 3. SLEEP WHEN DUE - one pass, never blocks the sensing loop

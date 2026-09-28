@@ -56,6 +56,35 @@ DEFAULT_POLICY = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Observation -> salience.
+# Design clause CAP-7: devices only report raw observations, the host decides
+# what is worth keeping. These two functions are that decision, kept here so
+# the policy lives with the rest of the pipeline and can be tested without a
+# camera or a microphone.
+# ---------------------------------------------------------------------------
+
+def visual_salience(objects, known_objects=None):
+    """
+    Salience of one visual observation, 0..1.
+
+    A frame showing nothing new scores below DEFAULT_POLICY["min_salience"]
+    and is therefore never memorised.
+    """
+    known_objects = known_objects or {}
+    objects = objects or []
+    fresh = sum(
+        1 for name in objects
+        if known_objects.get(name, {}).get("times_seen", 0) == 1
+    )
+    return max(0.0, min(1.0, 0.2 + 0.2 * fresh + 0.05 * len(objects)))
+
+
+def audio_salience(volume):
+    """Salience of one audio observation, 0..1: room tone is not a memory."""
+    return max(0.0, min(1.0, float(volume) * 3.0))
+
+
 def _fingerprint(kind, payload):
     """Stable fingerprint used to answer: have I seen this before?"""
     if isinstance(payload, str):
