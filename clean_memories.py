@@ -7,22 +7,12 @@ import os
 import shutil
 
 def clean_all():
-    """Delete all memories and data"""
-    folders_to_clean = [
-        "data",
-        "data/senses",
-        "data/senses/hearing",
-        "data/senses/seeing",
-        "data/pure",
-        "data/pure/human",
-        "data/pure/hearing",
-        "data/pure/seeing",
-        "data/baby",
-        "data/memory",
-        "data/test_pure",
-        "data/test_baby"
-    ]
-    
+    """
+    Delete all memories and data.
+
+    Two steps: the known state files first (so the count is meaningful), then
+    the whole data/ directory, which is a clean slate either way.
+    """
     files_to_clean = [
         "data/sensory_state.json",
         "data/senses/sensory_state.json",
@@ -30,8 +20,6 @@ def clean_all():
         "data/senses/seeing/seeing_state.json",
         "data/pure/learning_state.json",
         "data/pure/human/human_state.json",
-        "data/pure/hearing/hearing_state.json",
-        "data/pure/seeing/seeing_state.json",
         "data/baby/brain_state.json"
     ]
     
