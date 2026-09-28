@@ -4,3 +4,9 @@ Diary/
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Runtime state of the bot's mind - never committed.
+# Design clause IO-5: what the AI holds is one stream of consciousness,
+# not files; pictures are not memories. Backups live in data/backups
+# (configs/backup.json), not in git.
+data/
