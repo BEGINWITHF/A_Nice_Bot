@@ -1,0 +1,9 @@
+# Core runtime - enough to run `python main.py`.
+# Nothing here is a language model: the network itself lives in
+# core/pure_network.py and is plain Python.
+numpy
+opencv-python
+pyaudio
+
+# Tests need pytest and nothing else:
+#   python -m pip install pytest

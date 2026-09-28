@@ -5,7 +5,6 @@ The AI sees the world through a camera like human eyes
 
 import json
 import os
-import time
 from datetime import datetime
 
 class SeeingSystem:
@@ -311,17 +310,13 @@ class SeeingSystem:
             cap.release()
             
             if ret:
-                # Save the frame
-                timestamp = int(time.time())
-                filename = os.path.join(self.data_dir, f"capture_{timestamp}.jpg")
-                cv2.imwrite(filename, frame)
-                
-                # Analyze the frame
+                # IO-5: sample the frame, turn it into features, drop the
+                # pixels. The raw image is never written to disk - a JPEG is
+                # not a memory, the analysis below is.
                 analysis = self._analyze_frame(frame)
-                
+
                 observation = {
                     "type": "camera",
-                    "filename": filename,
                     "analysis": analysis,
                     "timestamp": datetime.now().isoformat()
                 }

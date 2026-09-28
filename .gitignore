@@ -5,6 +5,9 @@ Diary/
 __pycache__/
 *.py[cod]
 
+# Test runner cache
+.pytest_cache/
+
 # Runtime state of the bot's mind - never committed.
 # Design clause IO-5: what the AI holds is one stream of consciousness,
 # not files; pictures are not memories. Backups live in data/backups
