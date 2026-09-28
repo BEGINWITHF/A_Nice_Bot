@@ -1,0 +1,6 @@
+# Development diary stays local - not part of the repository.
+Diary/
+
+# Python bytecode
+__pycache__/
+*.py[cod]

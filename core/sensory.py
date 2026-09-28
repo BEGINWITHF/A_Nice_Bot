@@ -151,6 +151,24 @@ class SensorySystem:
             "awareness_restored": self.awareness_level
         }
     
+    def forget_pass(self, max_history=500):
+        """
+        Sleep-time pruning of the sensory buffer, called by MemoryPipeline.sleep().
+
+        sensory_history used to grow forever and was never written to disk,
+        so it was both a memory leak and useless across restarts.
+        """
+        dropped = 0
+        if len(self.sensory_history) > max_history:
+            dropped = len(self.sensory_history) - max_history
+            self.sensory_history = self.sensory_history[-max_history:]
+
+        # Sensory load must not survive the night
+        self.sensory_load = 0.0
+        self.fatigue_level = max(0.0, self.fatigue_level - 0.5)
+        self._save_state()
+        return dropped
+
     def get_overall_state(self):
         """Get overall sensory state"""
         return {

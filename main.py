@@ -12,10 +12,38 @@ import sys
 from datetime import datetime
 from core.sensory import SensorySystem
 from core.pure_learning import PureLearningSystem
+from core.memory_pipeline import MemoryPipeline
 
 # Initialize systems
 senses = SensorySystem()
 brain = PureLearningSystem()
+pipeline = MemoryPipeline()
+
+
+def register_stores(pipeline, senses, brain):
+    """
+    Attach every long term store to the memory pipeline.
+
+    Each store must expose forget() that really deletes - a store which only
+    lowers a strength value never forgets anything.
+    """
+    pipeline.register(
+        "hearing",
+        consolidate=senses.hearing.consolidate_auditory_memory,
+        forget=senses.hearing.forget_pass,
+    )
+    pipeline.register(
+        "seeing",
+        consolidate=senses.seeing.consolidate_visual_memory,
+        forget=senses.seeing.forget_pass,
+    )
+    pipeline.register(
+        "human",
+        consolidate=brain.human.sleep_like_consolidation,
+        forget=brain.human.forget_pass,
+    )
+    pipeline.register("learning", forget=brain.forget_pass)
+    pipeline.register("sensory", forget=senses.forget_pass)
 
 class MicrophoneInput:
     """Handles microphone input for hearing"""
@@ -97,6 +125,7 @@ def main():
     # Initialize sensory inputs
     mic = MicrophoneInput()
     camera = CameraInput()
+    register_stores(pipeline, senses, brain)
     
     print("PURE AI - Sensory Experience")
     print("=" * 40)
@@ -125,6 +154,18 @@ def main():
                     if result and "analysis" in result:
                         # Internal state updates
                         brain.seeing._analyze_frame(frame)
+                        # Salience gate: a frame that shows nothing new is not worth keeping
+                        objects = result["analysis"].get("it_objects") or []
+                        fresh = sum(
+                            1 for o in objects
+                            if senses.seeing.known_objects.get(o, {}).get("times_seen", 0) == 1
+                        )
+                        salience = 0.2 + 0.2 * fresh + 0.05 * len(objects)
+                        pipeline.record(
+                            "seeing",
+                            {"objects": sorted(objects)},
+                            salience=min(1.0, salience),
+                        )
             
             # 2. HEAR - Microphone captures sounds
             if mic.available:
@@ -135,8 +176,23 @@ def main():
                     
                     # AI's internal processing (silent)
                     brain.hear_word("sound")
+                    # Salience gate: room tone is not a memory, a loud sound is
+                    volume = sound["volume"]
+                    pipeline.record(
+                        "hearing",
+                        {"volume_band": int(volume * 20)},
+                        salience=min(1.0, volume * 3.0),
+                    )
             
-            # 3. REST - Brief pause between sensing
+            # 3. SLEEP WHEN DUE - one pass, never blocks the sensing loop
+            if pipeline.due():
+                report = pipeline.sleep(reason="scheduled")
+                print()
+                print(f"  slept: replayed={report['replayed']} "
+                      f"dropped={report['dropped_below_threshold']} "
+                      f"short_term={report['short_term_out']}")
+            
+            # 4. REST - Brief pause between sensing
             time.sleep(0.5)
             
             # Print minimal status (no internal thoughts)
@@ -154,6 +210,7 @@ def main():
         print("The AI keeps its memories.")
         
         # Save state
+        pipeline.sleep(reason="shutdown")
         senses._save_state()
         brain._save_state()
 

@@ -460,7 +460,64 @@ class SeeingSystem:
         
         self._save_state()
         return consolidated
-    
+
+    def forget_pass(self, max_objects=500, max_things=600, max_recognized=600,
+                    forget_threshold=0.05):
+        """
+        Sleep-time pruning, called by MemoryPipeline.sleep().
+
+        consolidate_visual_memory() only lowers memory_strength, and strength
+        multiplied by 0.9 never reaches zero - so it never deletes anything.
+        This method does the actual deleting.
+        """
+        dropped = {"known_objects": 0, "things_seen": 0, "objects_recognized": 0,
+                   "visual_memory": 0}
+
+        # Objects that were seen once, long ago, and never impressed
+        before = len(self.known_objects)
+        weak = [
+            name for name, d in self.known_objects.items()
+            if d.get("times_seen", 0) < 3
+            and d.get("memory_strength", 0.5) < forget_threshold
+        ]
+        for name in weak:
+            del self.known_objects[name]
+        dropped["known_objects"] = before - len(self.known_objects)
+
+        if len(self.known_objects) > max_objects:
+            ranked = sorted(
+                self.known_objects.items(),
+                key=lambda kv: (kv[1].get("memory_strength", 0.5),
+                                kv[1].get("times_seen", 0)),
+                reverse=True,
+            )
+            keep = dict(ranked[:max_objects])
+            dropped["known_objects"] += len(self.known_objects) - len(keep)
+            self.known_objects = keep
+
+        # Raw observation buffers: vision is not a video recorder
+        if len(self.things_seen) > max_things:
+            dropped["things_seen"] = len(self.things_seen) - max_things
+            self.things_seen = self.things_seen[-max_things:]
+        if len(self.objects_recognized) > max_recognized:
+            dropped["objects_recognized"] = len(self.objects_recognized) - max_recognized
+            self.objects_recognized = self.objects_recognized[-max_recognized:]
+
+        if len(self.visual_memory) > max_objects:
+            ranked = sorted(
+                self.visual_memory.items(),
+                key=lambda kv: kv[1].get("strength", 0.5)
+                if isinstance(kv[1], dict) else 0.5,
+                reverse=True,
+            )
+            keep = dict(ranked[:max_objects])
+            dropped["visual_memory"] = len(self.visual_memory) - len(keep)
+            self.visual_memory = keep
+
+        if any(dropped.values()):
+            self._save_state()
+        return dropped
+
     def recognize_object(self, frame):
         """
         Recognize objects in a frame using learned patterns

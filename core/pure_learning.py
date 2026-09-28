@@ -236,3 +236,45 @@ class PureLearningSystem:
             "knowledge_level": self.meaning_network.knowledge_level,
             "human_like": self.human.get_stats()
         }
+
+    # ------------------------------------------------------------------
+    # 睡眠期遗忘（由 core.memory_pipeline.MemoryPipeline.sleep 调用）
+    # ------------------------------------------------------------------
+    def forget_pass(self, max_patterns=2000, max_concepts=500, forget_threshold=0.05):
+        """
+        Trim patterns and concepts to budget - this MUST really delete.
+
+        Note: the vocabulary (word_to_index / index_to_word) never takes part
+        in pruning, because the neural net encodes words by index; dropping a
+        word would scramble the weights already learned. Forgetting happens at
+        the level of "which patterns are worth keeping", not "which words have
+        ever been heard".
+        """
+        dropped_patterns = 0
+        dropped_concepts = 0
+
+        # Patterns: sort by strength, the weak ones go first
+        before = len(self.patterns)
+        alive = [p for p in self.patterns if p.get("strength", 1) > forget_threshold]
+        alive.sort(key=lambda p: p.get("strength", 0), reverse=True)
+        dropped_patterns += before - len(alive)
+        if len(alive) > max_patterns:
+            dropped_patterns += len(alive) - max_patterns
+            alive = alive[:max_patterns]
+        self.patterns = alive
+
+        # Concepts: word frequency acts as strength (never counted = weak)
+        if len(self.concepts) > max_concepts:
+            ranked = sorted(
+                self.concepts.items(),
+                key=lambda kv: (self.word_frequency.get(kv[0], 0), kv[1].get("learned_at", "")),
+                reverse=True,
+            )
+            keep = dict(ranked[:max_concepts])
+            dropped_concepts = len(self.concepts) - len(keep)
+            self.concepts = keep
+
+        if dropped_patterns or dropped_concepts:
+            self._save_state()
+
+        return {"patterns": dropped_patterns, "concepts": dropped_concepts}

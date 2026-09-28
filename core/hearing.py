@@ -68,6 +68,9 @@ class HearingSystem:
                     self.hearing_sensitivity = state.get("hearing_sensitivity", 0.3)
                     self.known_sounds = state.get("known_sounds", {})
                     self.words_recognized = state.get("words_recognized", [])
+                    # 睡眠整理的就是这两样，不落盘的话睡眠等于白做
+                    self.auditory_memory = state.get("auditory_memory", self.auditory_memory)
+                    self.sound_frequencies = state.get("sound_frequencies", self.sound_frequencies)
             except:
                 pass
     
@@ -77,11 +80,15 @@ class HearingSystem:
         state = {
             "hearing_sensitivity": self.hearing_sensitivity,
             "known_sounds": self.known_sounds,
-            "words_recognized": self.words_recognized,
+            "words_recognized": self.words_recognized[-500:],
+            "auditory_memory": self.auditory_memory,
+            "sound_frequencies": self.sound_frequencies,
             "last_updated": datetime.now().isoformat()
         }
-        with open(state_file, "w", encoding="utf-8") as f:
+        tmp = state_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, state_file)
     
     def _init_cochlea(self):
         """
@@ -446,7 +453,63 @@ class HearingSystem:
         
         self._save_state()
         return consolidated
-    
+
+    def forget_pass(self, max_auditory=400, max_words=500, max_sounds=1000,
+                    forget_threshold=0.05):
+        """
+        Sleep-time pruning, called by MemoryPipeline.sleep().
+
+        This is where forgetting really happens: weak entries are deleted and
+        every list is held to a budget. consolidate_auditory_memory() only
+        adjusts strength - strength alone never removes anything.
+        """
+        dropped = {"auditory_memory": 0, "known_sounds": 0,
+                   "sounds_heard": 0, "words_recognized": 0}
+
+        # Auditory patterns: delete the weak ones, then cap what is left
+        before = len(self.auditory_memory)
+        weak = [
+            s for s, d in self.auditory_memory.items()
+            if d.get("strength", 0.5) < forget_threshold
+            and d.get("times_heard", 0) < 3
+        ]
+        for s in weak:
+            del self.auditory_memory[s]
+        dropped["auditory_memory"] += before - len(self.auditory_memory)
+
+        if len(self.auditory_memory) > max_auditory:
+            ranked = sorted(
+                self.auditory_memory.items(),
+                key=lambda kv: (kv[1].get("strength", 0.5), kv[1].get("times_heard", 0)),
+                reverse=True,
+            )
+            keep = dict(ranked[:max_auditory])
+            dropped["auditory_memory"] += len(self.auditory_memory) - len(keep)
+            self.auditory_memory = keep
+
+        # Known sounds: never heard again -> gone
+        before = len(self.known_sounds)
+        self.known_sounds = {
+            s: d for s, d in self.known_sounds.items()
+            if d.get("times_heard", d.get("count", 1)) >= 2
+            or d.get("strength", 0.5) >= forget_threshold
+        }
+        dropped["known_sounds"] = before - len(self.known_sounds)
+
+        # Raw buffers are capped: hearing is not a recording device
+        if len(self.sounds_heard) > max_sounds:
+            dropped["sounds_heard"] = len(self.sounds_heard) - max_sounds
+            self.sounds_heard = self.sounds_heard[-max_sounds:]
+        if len(self.words_recognized) > max_words:
+            dropped["words_recognized"] = len(self.words_recognized) - max_words
+            self.words_recognized = self.words_recognized[-max_words:]
+        if len(self.patterns_detected) > max_sounds:
+            self.patterns_detected = self.patterns_detected[-max_sounds:]
+
+        if any(dropped.values()):
+            self._save_state()
+        return dropped
+
     def recognize_sound_pattern(self, cochlea_pattern):
         """
         Recognize a sound pattern from cochlea activation

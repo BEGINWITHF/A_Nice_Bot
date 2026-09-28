@@ -78,8 +78,10 @@ class HumanLikeSystem:
             "last_interaction": None,
         }
         
-        # Memory of interactions
+        # Memory of interactions (working memory)
         self.interaction_memories = []
+        # Long term store: promoted here during sleep, this is what survives
+        self.long_term_memories = []
         
         # Current state
         self.want_to_talk = True
@@ -112,6 +114,12 @@ class HumanLikeSystem:
                     # Load state
                     self.want_to_talk = state.get("want_to_talk", True)
                     self.energy_level = state.get("energy_level", 0.7)
+                    # Sleep consolidation is worthless if what it consolidates
+                    # is never written to disk - these two used to be RAM only
+                    self.interaction_memories = state.get(
+                        "interaction_memories", self.interaction_memories)
+                    self.long_term_memories = state.get(
+                        "long_term_memories", self.long_term_memories)
             except:
                 pass
     
@@ -127,10 +135,14 @@ class HumanLikeSystem:
             "social_context": self.social_context,
             "want_to_talk": self.want_to_talk,
             "energy_level": self.energy_level,
+            "interaction_memories": self.interaction_memories,
+            "long_term_memories": self.long_term_memories,
             "last_updated": datetime.now().isoformat()
         }
-        with open(state_file, "w", encoding="utf-8") as f:
+        tmp = state_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, state_file)
     
     def process_input(self, user_input, username):
         """
@@ -509,6 +521,75 @@ class HumanLikeSystem:
         
         return integrated
     
+    def forget_pass(self, max_working=20, max_long_term=500,
+                    promote_threshold=0.6, forget_threshold=0.08):
+        """
+        Sleep-time promotion and pruning, called by MemoryPipeline.sleep().
+
+        interaction_memories is working memory - what happened while awake.
+        long_term_memories is what survives. Sleep moves the strong ones
+        across the boundary and deletes what never mattered. Before this
+        method existed nothing was ever deleted, and neither list was ever
+        written to disk, so consolidation was lost on exit.
+        """
+        report = {"promoted": 0, "working_dropped": 0,
+                  "long_term_dropped": 0, "long_term_size": 0}
+
+        still_working = []
+        for m in self.interaction_memories:
+            strength = m.get("strength", 0.5)
+
+            if strength >= promote_threshold:
+                promoted = dict(m)
+                promoted["promoted_at"] = datetime.now().isoformat()
+                self._upsert_long_term(promoted)
+                report["promoted"] += 1
+            elif strength < forget_threshold and len(self.interaction_memories) > max_working:
+                report["working_dropped"] += 1
+            else:
+                still_working.append(m)
+
+        # Working memory has a hard budget: the day is not remembered in full
+        if len(still_working) > max_working:
+            still_working.sort(key=lambda m: m.get("strength", 0.5), reverse=True)
+            report["working_dropped"] += len(still_working) - max_working
+            still_working = still_working[:max_working]
+        self.interaction_memories = still_working
+
+        # Long term slowly fades too, but never below a floor - a person keeps
+        # the shape of their past even when the details blur
+        faded = []
+        for m in self.long_term_memories:
+            m["strength"] = m.get("strength", 0.5) * 0.97
+            faded.append(m)
+        self.long_term_memories = faded
+
+        if len(self.long_term_memories) > max_long_term:
+            self.long_term_memories.sort(
+                key=lambda m: (m.get("strength", 0.5), m.get("timestamp", "")),
+                reverse=True)
+            report["long_term_dropped"] = len(self.long_term_memories) - max_long_term
+            self.long_term_memories = self.long_term_memories[:max_long_term]
+
+        report["long_term_size"] = len(self.long_term_memories)
+
+        if any(report.values()):
+            self._save_state()
+        return report
+
+    def _upsert_long_term(self, memory):
+        """Insert or reinforce a long term memory (repetition beats novelty)."""
+        for existing in self.long_term_memories:
+            if existing.get("input") == memory.get("input"):
+                existing["strength"] = min(
+                    1.0, existing.get("strength", 0.5) + 0.1)
+                existing["repeat_count"] = existing.get("repeat_count", 1) + 1
+                return existing
+        memory["strength"] = max(memory.get("strength", 0.5), 0.6)
+        memory.setdefault("repeat_count", 1)
+        self.long_term_memories.append(memory)
+        return memory
+
     def store_interaction_memory(self, input_text, response, emotional_impact=0.5):
         """
         Store an interaction in memory for later consolidation
