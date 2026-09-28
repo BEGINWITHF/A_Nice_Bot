@@ -22,10 +22,12 @@ state is never committed to this repository — pictures are not memories.
 | `core/human_like.py` | Mood, trust, relationships, long-term life events |
 | `core/baby_brain.py` | Developmental stages (birth → sensory → babbling → …) |
 | `core/pure_network.py` | The network itself, written in plain Python |
-| `configs/` | Paths only — no external model is configured anywhere |
 | `ui/`, `gui_main.py` | Experimental GUI, will be rebuilt |
-| `tools/` | Dormant device-control helpers, not wired into the loop yet |
 | `test_*.py` | Test suite |
+
+There is no external model to configure anywhere in the repository: the network
+lives in `core/pure_network.py` and is plain Python, because the model is one we
+train ourselves.
 
 ## Requirements
 
@@ -37,7 +39,6 @@ Optional, only if you use them:
 
 ```text
 pip install PySide6   # GUI: python gui_main.py
-pip install pynput mss # tools/: keyboard, mouse, screenshot helpers
 ```
 
 ## Run

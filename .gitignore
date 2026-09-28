@@ -10,6 +10,6 @@ __pycache__/
 
 # Runtime state of the bot's mind - never committed.
 # Design clause IO-5: what the AI holds is one stream of consciousness,
-# not files; pictures are not memories. Backups live in data/backups
-# (configs/backup.json), not in git.
+# not files; pictures are not memories. data/ holds the whole mind: the
+# short term buffer, the sleep ledger and every long term store.
 data/

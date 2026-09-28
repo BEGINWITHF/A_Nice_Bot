@@ -145,23 +145,19 @@ def main():
             
             # 1. SEE - Camera captures environment
             if camera.available:
-                frame = camera.capture()
-                if frame is not None:
-                    # Process through sensory system
-                    result = senses.see_camera()
-                    
-                    # AI's internal processing (silent)
-                    if result and "analysis" in result:
-                        # Internal state updates
-                        brain.seeing._analyze_frame(frame)
-                        # Salience gate (CAP-7): the host decides what is worth
-                        # keeping, a frame with nothing new is not memorised
-                        objects = result["analysis"].get("it_objects") or []
-                        pipeline.record(
-                            "seeing",
-                            {"objects": sorted(objects)},
-                            salience=visual_salience(objects, senses.seeing.known_objects),
-                        )
+                # SensorySystem opens the camera and analyses the frame itself,
+                # so there is no second capture here - one frame per cycle.
+                result = senses.see_camera()
+
+                # Salience gate (CAP-7): the host decides what is worth
+                # keeping, a frame with nothing new is not memorised
+                if result and "analysis" in result:
+                    objects = result["analysis"].get("it_objects") or []
+                    pipeline.record(
+                        "seeing",
+                        {"objects": sorted(objects)},
+                        salience=visual_salience(objects, senses.seeing.known_objects),
+                    )
             
             # 2. HEAR - Microphone captures sounds
             if mic.available:

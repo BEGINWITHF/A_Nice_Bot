@@ -10,8 +10,6 @@ import os
 from datetime import datetime
 from core.pure_network import PureNeuralNetwork
 from core.human_like import HumanLikeSystem
-from core.hearing import HearingSystem
-from core.seeing import SeeingSystem
 
 class PureLearningSystem:
     """
@@ -25,11 +23,11 @@ class PureLearningSystem:
         
         # Human-like system
         self.human = HumanLikeSystem(data_dir=os.path.join(data_dir, "human"))
-        
-        # Sensory systems
-        self.hearing = HearingSystem(data_dir=os.path.join(data_dir, "hearing"))
-        self.seeing = SeeingSystem(data_dir=os.path.join(data_dir, "seeing"))
-        
+
+        # No sensors of its own: seeing and hearing belong to SensorySystem,
+        # which is the store the memory pipeline registers. A second copy here
+        # would hold memories that no sleep pass ever reaches (OPEN-9).
+
         # Vocabulary - starts empty
         self.word_to_index = {"<UNK>": 0, "<PAD>": 1, "<START>": 2, "<END>": 3}
         self.index_to_word = {0: "<UNK>", 1: "<PAD>", 2: "<START>", 3: "<END>"}
@@ -214,16 +212,14 @@ class PureLearningSystem:
     
     def hear_word(self, sound):
         """
-        Process a sound heard through microphone
-        Like a baby hearing sounds
+        Process a sound heard through the microphone - like a baby hearing.
+
+        The word enters the vocabulary and nothing is written back to the
+        microphone (IO-2 / IO-3: no text out). The sound itself is already
+        held by SensorySystem, the store the memory pipeline registers, so
+        no second copy is kept here.
         """
-        # Learn the sound
         self.learn_word(sound)
-        
-        # Process through hearing system
-        self.hearing.hear_sound(sound)
-        
-        # Internal state changes happen silently
         return None
     
     def get_stats(self):
