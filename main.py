@@ -182,7 +182,8 @@ def main():
                 print()
                 print(f"  slept: replayed={report['replayed']} "
                       f"dropped={report['dropped_below_threshold']} "
-                      f"short_term={report['short_term_out']}")
+                      f"recent={report['recent_out']} "
+                      f"episodes={report['episodes']}")
             
             # 4. REST - Brief pause between sensing
             time.sleep(0.5)

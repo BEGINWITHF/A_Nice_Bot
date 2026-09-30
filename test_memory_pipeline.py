@@ -21,6 +21,8 @@ from core.memory_pipeline import (
     audio_salience,
     visual_salience,
 )
+from core.parameters import accessibility
+from core.episodes import LongTermEpisodes
 from core.hearing import HearingSystem
 from core.seeing import SeeingSystem
 from core.human_like import HumanLikeSystem
@@ -49,7 +51,8 @@ def test_unimportant_events_are_never_memorized(tmp_path):
     assert p.record("hearing", {"volume_band": 1}, salience=0.10) is None
     assert p.record("hearing", {"volume_band": 2}, salience=0.24) is None
 
-    assert len(p.short_term) == 0
+    assert len(p.consciousness) == 0
+    assert len(p.recent) == 0
     assert p.total_dropped == 2
     assert p.total_recorded == 0
 
@@ -60,23 +63,26 @@ def test_important_events_are_memorized(tmp_path):
     entry = p.record("seeing", {"objects": ["cup"]}, salience=0.7)
 
     assert entry is not None
-    assert len(p.short_term) == 1
+    assert len(p.consciousness) == 1
     assert p.total_recorded == 1
-    assert 0.0 <= entry["strength"] <= 1.0
+    # nothing is stored that could go stale: the clocks are the memory
+    assert entry["when_first"] <= entry["when_last_rehearsed"]
+    assert accessibility(0.0) == 1.0
 
 
 def test_repeats_reinforce_instead_of_duplicating(tmp_path):
     """Meeting the same thing twice must not create two memories."""
     p = new_pipeline(tmp_path)
 
-    first = p.record("seeing", {"objects": ["cup"]}, salience=0.5)
-    second = p.record("seeing", {"objects": ["cup"]}, salience=0.9)
+    first = p.record("seeing", {"objects": ["cup"]}, salience=0.5, now=100.0)
+    second = p.record("seeing", {"objects": ["cup"]}, salience=0.9, now=120.0)
 
-    assert len(p.short_term) == 1
+    assert len(p.consciousness) == 1
     assert second is first
     assert second["hits"] == 2
-    assert second["strength"] > 0.5
     assert second["salience"] == 0.9
+    # a repeat is a rehearsal: the clock moves forward, it does not decay
+    assert second["when_last_rehearsed"] == 120.0
 
 
 def test_fingerprint_is_stable_and_kind_scoped():
@@ -88,18 +94,92 @@ def test_fingerprint_is_stable_and_kind_scoped():
     assert a != c
 
 
-def test_full_buffer_evicts_the_weakest(tmp_path):
-    """A working memory with a budget forgets on the spot."""
-    p = new_pipeline(tmp_path, short_term_capacity=3)
+def test_focus_overflow_sinks_instead_of_deleting(tmp_path):
+    """OPEN-15 D: a full focus moves the stalest entry down, never drops it."""
+    p = new_pipeline(tmp_path, conscious_capacity=3, window_s=30.0)
 
+    # one entry per event, and events are 31 s apart so each is a new one
     for i in range(5):
-        p.record("seeing", {"n": i}, salience=0.5)
+        p.record("seeing", {"objects": [f"o{i}"]},
+                 salience=0.5, now=1000.0 + i * 31.0)
 
-    assert len(p.short_term) == 3
-    assert p.total_dropped == 2
-    # The oldest ones are the ones that went
-    assert {"n": 0} not in [e["payload"] for e in p.short_term]
-    assert {"n": 4} in [e["payload"] for e in p.short_term]
+    assert len(p.consciousness) == 3
+    assert len(p.recent) == 2          # sunk, not deleted
+    assert p.total_dropped == 0        # nothing was thrown away
+    # the least recently rehearsed are the ones that moved down
+    assert p.consciousness[-1]["payload"] == {"objects": ["o4"]}
+    assert [e["payload"] for e in p.recent] == [
+        {"objects": ["o0"]}, {"objects": ["o1"]}]
+
+
+def test_soft_capacity_makes_crowding_age_faster(tmp_path):
+    """OPEN-15 D: crowding changes the decay, not the membership."""
+    assert accessibility(3600.0, load=0.0) > \
+        accessibility(3600.0, load=3.0)
+    # ...but a memory nobody has ever crowded still survives its 112 days
+    assert accessibility(10 * 86400.0, load=0.0) >= 0.08
+
+
+def test_accessibility_follows_the_published_fit(tmp_path):
+    """OPEN-13/DATA-6: the curve is a citation, not a magic number."""
+    # Murre & Dros (2015) Table 5, Ebbinghaus column, normalised to 1 at t=0
+    assert accessibility(0.0) == 1.0
+    assert accessibility(600) == pytest.approx(0.905, abs=0.002)     # 10 min
+    assert accessibility(3600) == pytest.approx(0.627, abs=0.005)    # 1 h
+    assert accessibility(86400) == pytest.approx(0.448, abs=0.005)   # 1 day
+
+    # with the documented floor of 0.08 and nobody rehearsing: ~112 days
+    assert accessibility(111 * 86400) > 0.08 > accessibility(114 * 86400)
+
+
+# ---------------------------------------------------------------------------
+# OPEN-16 (decided: G) - window gives the default cut, shock may cut early
+# ---------------------------------------------------------------------------
+
+def test_window_expires_and_the_next_observation_starts_a_new_event(tmp_path):
+    p = new_pipeline(tmp_path, window_s=30.0)
+
+    a = p.record("seeing", {"objects": ["cup"]}, salience=0.5, now=1000.0)
+    same = p.record("seeing", {"objects": ["cup"]}, salience=0.5, now=1010.0)
+    later = p.record("seeing", {"objects": ["cup"]}, salience=0.5, now=1040.0)
+
+    assert same is a              # inside the window: one event
+    assert later is not a         # window expired: new event
+    assert len(p.consciousness) == 2
+
+
+def test_content_shock_cuts_early(tmp_path):
+    """G's exception: the situation replaced itself completely."""
+    p = new_pipeline(tmp_path, window_s=30.0, shock_threshold=0.6)
+
+    a = p.record("seeing", {"objects": ["cup", "plate"]},
+                 salience=0.5, now=1000.0)
+    b = p.record("seeing", {"objects": ["lamp", "chair"]},
+                 salience=0.5, now=1005.0)
+
+    assert b is not a and a["key"] != b["key"]
+
+
+def test_a_shock_cannot_cut_twice_in_the_same_window(tmp_path):
+    """Otherwise G degenerates back into E (a new entry per frame)."""
+    p = new_pipeline(tmp_path, window_s=30.0, shock_threshold=0.6)
+
+    first = p.record("seeing", {"objects": ["cup"]}, salience=0.5, now=1000.0)
+    second = p.record("seeing", {"objects": ["zzz"]}, salience=0.5, now=1002.0)
+    third = p.record("seeing", {"objects": ["qqq"]}, salience=0.5, now=1004.0)
+
+    assert second["key"] != first["key"]    # the one allowed early cut
+    assert third["key"] == second["key"]    # second shock in the slot: refused
+
+
+def test_scalar_readings_are_not_a_situation_change(tmp_path):
+    """volume_band is a degree, not a new event (Zacks 2010 dimensions)."""
+    p = new_pipeline(tmp_path, window_s=30.0, shock_threshold=0.6)
+
+    a = p.record("hearing", {"volume_band": 3}, salience=0.5, now=1000.0)
+    b = p.record("hearing", {"volume_band": 17}, salience=0.5, now=1002.0)
+
+    assert b is a
 
 
 # ---------------------------------------------------------------------------
@@ -143,39 +223,102 @@ def test_sleep_resets_the_rhythm_and_returns_immediately(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_sleep_forgets_what_decayed_below_threshold(tmp_path):
-    p = new_pipeline(
-        tmp_path,
-        decay_per_sleep=0.3,
-        forget_threshold=0.2,
-        promote_threshold=0.9,
-        replay_salience=1.1,   # nothing gets replayed
-    )
-    p.record("hearing", {"volume_band": 3}, salience=0.5)
+    """OPEN-14: nobody rehearsed it, the curve took it away."""
+    p = new_pipeline(tmp_path, replay_salience=1.1)   # nothing is replayed
+    p.record("hearing", {"volume_band": 3}, salience=0.5, now=1000.0)
 
-    report = p.sleep(now=1000.0)
+    # 200 days later the MCM curve is far under the floor
+    report = p.sleep(now=1000.0 + 200 * 86400)
 
     assert report["dropped_below_threshold"] == 1
-    assert p.short_term == []
+    assert p.recent == []
+    assert p.consciousness == []
 
 
-def test_sleep_promotes_salient_memories_to_long_term(tmp_path):
-    promoted = []
+def test_sleep_keeps_what_was_rehearsed(tmp_path):
+    """The other half of OPEN-14: replay refreshes the clock, it survives."""
+    p = new_pipeline(tmp_path, replay_salience=0.6)
+    p.record("hearing", {"volume_band": 3}, salience=0.9, now=1000.0)
 
-    p = new_pipeline(
-        tmp_path,
-        decay_per_sleep=1.0,
-        replay_salience=0.6,
-        replay_boost=0.5,
-        promote_threshold=0.7,
-    )
-    p.register("hearing", promote=lambda e: promoted.append(e["key"]))
-    p.record("hearing", {"volume_band": 9}, salience=0.9)
-
-    report = p.sleep(now=1000.0)
+    report = p.sleep(now=1000.0 + 200 * 86400)
 
     assert report["replayed"] == 1
-    assert report["promoted"] == ["hearing"]
-    assert len(promoted) == 1
+    assert report["dropped_below_threshold"] == 0
+
+
+def test_sleep_transfers_replayed_and_old_enough_entries(tmp_path):
+    """OPEN-15: sleep decides, and it is selective (replay + >= 1 day)."""
+    p = new_pipeline(tmp_path, replay_salience=0.6, promote_min_age=86400.0)
+    p.record("seeing", {"objects": ["cup"]}, salience=0.9, now=1000.0)
+
+    report = p.sleep(now=1000.0 + 2 * 86400)
+
+    assert report["promoted"] == ["seeing"]
+    assert p.recent == []
+    assert p.episodes.count() == 1
+
+
+def test_wake_never_reaches_long_term(tmp_path):
+    """OPEN-15 A (narrow): the wake period only writes the short layers."""
+    p = new_pipeline(tmp_path)
+    for i in range(6):
+        p.record("seeing", {"objects": [f"o{i}"]},
+                 salience=0.9, now=1000.0 + i * 40.0)
+
+    assert p.episodes.count() == 0
+    assert len(p.consciousness) + len(p.recent) == 6
+
+
+def test_long_term_stores_only_the_five_episode_fields(tmp_path):
+    """OPEN-17 / DATA-5: no times_seen, no strength, no salience."""
+    p = new_pipeline(tmp_path)
+    p.record("seeing", {"objects": ["cup"], "where": "desk"},
+             salience=0.9, now=1000.0)
+    p.episodes.promote(p.consciousness[0], now=5000.0)
+
+    ep = p.episodes.find("seeing", {"objects": ["cup"], "where": "desk"})
+    assert ep is not None
+    assert set(ep) == {"when_first", "when_last_rehearsed",
+                       "where", "what", "kind"}
+    assert ep["where"] == "desk"
+    assert ep["when_first"] == 1000.0
+
+
+def test_long_term_refreshes_instead_of_duplicating(tmp_path):
+    """Meeting it again buys it time rather than making a second copy."""
+    store = LongTermEpisodes(str(tmp_path / "mem"), budget=500)
+    entry = {"kind": "seeing", "payload": {"objects": ["cup"]},
+             "when_first": 100.0}
+
+    assert store.promote(entry, now=200.0) is True
+    assert store.promote(entry, now=900.0) is True
+    assert store.count() == 1
+    assert store.find("seeing", {"objects": ["cup"]})["when_last_rehearsed"] == 900.0
+
+
+def test_long_term_forgets_by_the_curve_and_respects_budget(tmp_path):
+    store = LongTermEpisodes(str(tmp_path / "mem"), budget=3)
+    for i in range(5):
+        store.promote({"kind": "seeing", "payload": {"n": i},
+                       "when_first": 100.0}, now=200.0 + i)
+
+    # fresh: nothing is under the curve floor, but the budget is a ceiling
+    assert store.forget_pass(now=300.0) == 2
+    assert store.count() == 3
+    # the least recently rehearsed were the ones dropped
+    assert store.find("seeing", {"n": 0}) is None
+    assert store.find("seeing", {"n": 4}) is not None
+
+
+def test_long_term_forgets_only_when_sleep_runs(tmp_path):
+    store = LongTermEpisodes(str(tmp_path / "mem"), budget=500)
+    store.promote({"kind": "seeing", "payload": {"objects": ["cup"]},
+                   "when_first": 0.0}, now=1000.0)
+
+    # nothing happens by merely waiting: the pass is what forgets (OPEN-14)
+    assert store.count() == 1
+    assert store.forget_pass(now=1000.0 + 400 * 86400) == 1
+    assert store.count() == 0
 
 
 def test_broken_store_cannot_ruin_the_whole_sleep(tmp_path):
@@ -193,27 +336,37 @@ def test_broken_store_cannot_ruin_the_whole_sleep(tmp_path):
     assert p.events_since_sleep == 0
 
 
-def test_dedup_index_stays_within_budget(tmp_path):
-    p = new_pipeline(tmp_path, seen_key_max=10, seen_key_retention=10 ** 9)
+def test_a_rehearsed_entry_comes_back_into_focus(tmp_path):
+    """Rehearsal during wake brings an entry up from `recent` (A, narrow)."""
+    p = new_pipeline(tmp_path, conscious_capacity=1, window_s=30.0)
 
-    for i in range(50):
-        p.record("seeing", {"n": i}, salience=0.5)
-    p.sleep(now=1000.0)
+    seen = p.record("seeing", {"objects": ["cup"]}, salience=0.5, now=1000.0)
+    p.record("hearing", {"volume_band": 3}, salience=0.5, now=1000.5)
+    assert seen in p.recent             # the focus held only the sound
 
-    assert len(p.seen_keys) <= 10
+    again = p.record("seeing", {"objects": ["cup"]}, salience=0.5, now=1001.0)
+    assert again is seen                # same event: reinforced, not copied
+    assert seen in p.consciousness      # brought back up
+    assert seen not in p.recent
+    assert seen["when_last_rehearsed"] == 1001.0
+    # ...and the sound was the one that sank to make room
+    assert p.consciousness[0] is seen
+    assert len(p.recent) == 1 and p.recent[0]["kind"] == "hearing"
 
 
 def test_ledger_survives_a_restart(tmp_path):
-    p = new_pipeline(tmp_path)
-    for i in range(3):
-        p.record("seeing", {"n": i}, salience=0.5)
-    p.sleep(now=1000.0)
+    p = new_pipeline(tmp_path, window_s=30.0)
+    for i in range(3):                      # 31 s apart -> 3 separate events
+        p.record("seeing", {"n": i}, salience=0.5, now=1000.0 + i * 31.0)
+    p.sleep(now=1100.0)
 
     again = new_pipeline(tmp_path)
 
     assert len(again.sleep_reports) == 1
     assert again.total_recorded == 3
     assert again.last_report()["reason"] == "scheduled"
+    # the long term store is its own file and comes back too
+    assert again.episodes.count() == 0
 
 
 # ---------------------------------------------------------------------------

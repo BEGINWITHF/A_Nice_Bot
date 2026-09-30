@@ -16,6 +16,8 @@ state is never committed to this repository — pictures are not memories.
 | `memory_report.py` | **Read-only view** of everything the bot currently holds |
 | `clean_memories.py` | Wipe all state and start from a blank mind |
 | `core/memory_pipeline.py` | The gate: when to memorise, when to forget, when to sleep |
+| `core/parameters.py` | Every number the memory system uses, with its source and how to swap it (`OPEN-13`) |
+| `core/episodes.py` | The long-term episode store sleep transfers into (`OPEN-17`) |
 | `core/sensory.py` | Camera + microphone front end, body state (awareness, load) |
 | `core/seeing.py` / `core/hearing.py` | One store per sense, each with real forgetting |
 | `core/pure_learning.py` | Vocabulary, word patterns and concepts learned from experience |
@@ -64,7 +66,7 @@ new never enters memory. Every 20 cycles a one-line status is printed, and when
 the sleep rhythm comes due it prints a sleep report:
 
 ```text
-  slept: replayed=2 dropped=0 short_term=7
+  slept: replayed=2 dropped=0 recent=7 episodes=3
 ```
 
 Press `Ctrl+C` to stop. The bot sleeps once more before exiting, so nothing is
@@ -76,19 +78,36 @@ lost.
 python memory_report.py
 ```
 
+The mind is held in three layers: a **focus** of six slots (what is in mind
+right now), a **recent** cache below it whose capacity is soft - crowding it
+makes everything in it age faster instead of throwing anything out - and the
+**long-term episodes** sleep transfers into. Everything numeric lives in
+`core/parameters.py`, next to the paper it came from.
+
 ```text
-SHORT-TERM BUFFER   (what it is holding right now)
+FOCUS   (0/6 - what is in mind right now)
+-----------------------------------------
+  (empty)
+
+RECENT   (1 entries, soft capacity 65, load 0.02)
+-------------------------------------------------
+soft: crowding makes everything older faster, nothing is evicted
+  0.25  acc 1.00  x14  seeing   0s ago  {"objects": ["red1_object"]}
+
+EPISODES   (long term: what sleep decided to keep)
 --------------------------------------------------
-1/128 entries, 0 events since last sleep
-gate: salience >= 0.25, sleep after 900s or 200 events
-  0.30  str 0.84  x8  seeing   25m ago  {"objects": ["red1_object"]}
+  acc 1.00  first 2d ago  last 2d ago  seeing   {"objects": ["red1_object"]}
 
 SEEING   (long term: what it has ever seen)
   red1_object              seen   30x  strength 1.00  since 2026-09-29 01:51
 
 SLEEP LEDGER   (3 sleeps, newest last)
-  2026-09-29 02:16:19  shutdown   awake   24.2s  events  7  promoted 0 ...
+  2026-09-29 02:16:19  shutdown   awake   24.2s  events  7  recent 2->1 ...
 ```
+
+`acc` is availability recomputed from the last-rehearsal clock every time you
+ask - no strength field is stored anywhere, because a stored parameter is not
+part of a memory.
 
 It only reads state files: no camera, no microphone, nothing is written, and it
 is safe to run while `main.py` is running.
@@ -99,7 +118,7 @@ is safe to run while `main.py` is running.
 python -m pytest -v
 ```
 
-28 tests in about three seconds. They need **only pytest** — `core/` imports
+40 tests in about three seconds. They need **only pytest** - `core/` imports
 nothing outside the standard library at module level, so no camera, no
 microphone, no model weights, and no writes outside a temporary directory.
 
@@ -108,9 +127,9 @@ The same suite runs on every push through GitHub Actions
 
 ## State
 
-`data/` holds the whole mind: the short-term buffer, the sleep ledger and every
-long-term store. It is listed in `.gitignore` and never committed. Deleting it
-only resets the bot, it does not affect the code.
+`data/` holds the whole mind: the focus, the recent cache, the long-term
+episodes, the sleep ledger and every store. It is listed in `.gitignore` and
+never committed. Deleting it only resets the bot, it does not affect the code.
 
 ```bash
 python clean_memories.py   # erase everything, start fresh
@@ -121,11 +140,12 @@ python memory_report.py    # verify data/ is empty
 
 This is a long-running project, built one complete step at a time.
 
-- **Done:** sensory loop, salience gate, short-term buffer, sleep with
-  consolidation and real forgetting across all five stores, persistence across
-  restarts, test suite with CI.
-- **Next:** capability part — an HTTP ingestion endpoint so other devices can
-  feed the same senses in.
+- **Done:** sensory loop, salience gate, three-layer memory (focus / recent /
+  long-term episodes) with a soft capacity, event segmentation by window plus
+  content shock, sleep with selective transfer and real forgetting across all
+  five stores, persistence across restarts, test suite with CI.
+- **Next:** `OPEN-12` two-process sleep rhythm, then the capability part - an
+  HTTP ingestion endpoint so other devices can feed the same senses in.
 
 ## License
 

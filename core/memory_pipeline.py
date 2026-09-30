@@ -10,15 +10,28 @@ Design source: Diary/articles/2026-09-29-design-passage.md
    extremely important ...)"
 
 This module is deliberately a **deterministic, non-AI policy**: thresholds,
-budgets and a circadian rhythm. No neural network takes part in it.
+budgets and a rhythm. No neural network takes part in it.
 It does not understand anything - it only allocates attention.
 
-Three invariants:
+Three layers (decided in OPEN-15, author's answer "就这样做了"):
+
+  consciousness   the focus, CONSCIOUS_CAPACITY entries.  When it overflows
+                  the stalest entry *sinks* into `recent` - nothing is
+                  deleted here (D: soft capacity, no hard eviction).
+  recent          the cache below the focus, soft capacity: crowding it only
+                  makes everything in it age faster (parameters.accessibility
+                  load term), it never kicks an entry out on its own.
+  episodes        long term, core/episodes.py - reached only during sleep and
+                  only selectively (OPEN-17).
+
+Two invariants kept from the original:
   1. The sensing/behaviour loops are never blocked by sleep. sleep() runs a
      single pass and returns immediately - a sleeping person still hears.
-  2. Every memory has a cap. Each registered store gets a capacity budget.
-  3. Forgetting really deletes. Strength below threshold is removed, instead
-     of being multiplied by 0.9 forever.
+  2. Forgetting really deletes. Below the threshold the entry is removed,
+     instead of being multiplied by 0.9 forever.
+
+Everything numeric lives in core/parameters.py (OPEN-13), so a whole source
+can be swapped in one place.
 """
 
 import hashlib
@@ -27,32 +40,34 @@ import os
 import time
 from datetime import datetime
 
+from core import parameters as P
+from core.episodes import LongTermEpisodes
+
 # ---------------------------------------------------------------------------
-# Policy parameters (all thresholds, no models)
+# Policy - thin aliases over core/parameters.py, kept so that tests and
+# reports can still override single values (OPEN-13: one place to swap a
+# source; this dict is that place's view, not a second copy of the numbers).
 # ---------------------------------------------------------------------------
 DEFAULT_POLICY = {
     # --- when to memorize ---
-    "min_salience": 0.25,          # below this salience: never enters the buffer
-    "short_term_capacity": 128,    # max entries held in working memory at once
-    "reinforce_on_repeat": True,   # meeting it again strengthens, not duplicates
-    "repeat_salience_boost": 0.08, # strength gained per repeat
+    "min_salience": 0.25,               # below this: never enters the focus
+    "conscious_capacity": P.CONSCIOUS_CAPACITY,   # focus size (Cowan, OPEN-14)
+    "recent_capacity": P.RECENT_CAPACITY,         # soft, # ASSUMPTION (65)
 
-    # --- when to sleep (daily rhythm) ---
-    "sleep_after_seconds": 900,    # awake for 15 min -> time for one sleep pass
-    "sleep_after_events": 200,     # or after 200 sensed events
+    # --- when to sleep (still the placeholder rhythm; OPEN-12 pending) ---
+    "sleep_after_seconds": P.SLEEP_AFTER_SECONDS,
+    "sleep_after_events": P.SLEEP_AFTER_EVENTS,
 
     # --- what sleep does ---
-    "decay_per_sleep": 0.85,       # strength decay applied on every pass
-    "replay_boost": 0.05,          # salient memories are replayed, hence stronger
-    "replay_salience": 0.6,        # salience needed to count as "worth replaying"
-    "promote_threshold": 0.6,      # strength reaching this -> handed to long term
-    "forget_threshold": 0.08,      # strength below this -> really deleted
-    "max_sleep_reports": 20,       # how many sleep reports the ledger keeps
+    "replay_salience": P.REPLAY_SALIENCE,   # salient enough to be replayed
+    "forget_threshold": P.FORGET_THRESHOLD, # below this: really deleted
+    "promote_min_age": P.PROMOTE_MIN_AGE_S, # Cepeda 2006: >= 1 day before
+                                            # sleep may transfer it
+    "max_sleep_reports": P.MAX_SLEEP_REPORTS,
 
-    # --- the dedup index cannot grow forever either ---
-    "seen_key_max": 4096,          # max dedup index entries
-    "seen_key_retention": 604800,  # keep dedup index for 7 days; after that the
-                                   # same thing feels "new" again
+    # --- event segmentation (OPEN-16, decided: G) ---
+    "window_s": P.WINDOW_S,             # default cut on timeout
+    "shock_threshold": P.SHOCK_THRESHOLD, # content shock may cut early
 }
 
 
@@ -86,7 +101,7 @@ def audio_salience(volume):
 
 
 def _fingerprint(kind, payload):
-    """Stable fingerprint used to answer: have I seen this before?"""
+    """Stable fingerprint of one observation's content."""
     if isinstance(payload, str):
         body = payload.strip().lower()
     else:
@@ -94,9 +109,77 @@ def _fingerprint(kind, payload):
     return hashlib.sha1(f"{kind}|{body}".encode("utf-8", "replace")).hexdigest()[:16]
 
 
+# ---------------------------------------------------------------------------
+# OPEN-16 (decided: G) - event segmentation
+# ---------------------------------------------------------------------------
+# G = "the window gives the default cut, a content shock may cut early".
+#
+# The old rule was E: the fingerprint of the content *was* the event key, so
+# every change of the object list opened a new entry - the bottleneck's
+# amplifier (see Diary/articles/2026-09-29-consolidation-bottleneck.md).
+#
+# Why G and not F (pure window): Gomez et al. (2025) showed duration alone
+# predicts everyday event endings at 4-5% accuracy, and Guler et al. (2026)
+# showed working memory is reset *by* boundaries rather than generating them
+# on a timer - so a pure clock has no principled cut point.  Why not E: Shim
+# et al. (2022) showed boundaries appear even for fully predictable changes,
+# so "content changed" is not the rule either.  Evidence: Diary/articles/
+# 2026-09-29-consolidation-evidence.md sections 4, 4.1, 4.2.
+
+def _set_fields(payload):
+    """The set-valued fields of a payload - what a 'situation' is made of."""
+    if not isinstance(payload, dict):
+        return frozenset()
+    tokens = set()
+    for key, value in payload.items():
+        if isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                tokens.add(f"{key}={item}")
+        # scalars (e.g. volume_band) are readings, not situation: a changing
+        # scalar is a degree, not a new event - Zacks et al. (2010) coded
+        # character/spatial/goal/object changes as the situational dimensions.
+    return frozenset(tokens)
+
+
+def _shock_distance(old, new):
+    """1 - Jaccard similarity between two situations. 1.0 = total change."""
+    old, new = set(old or ()), set(new or ())
+    if not old or not new:
+        return 0.0            # nothing to compare: not a shock
+    return 1.0 - (len(old & new) / float(len(old | new)))
+
+
+def _merge_payload(old, new):
+    """
+    Fold one observation into the entry it belongs to.
+
+    Lists are unioned (the situation accumulates what was there), scalars
+    keep the first value (the entry stands for how the event started).
+    # ASSUMPTION: no literature specifies how to merge two observations
+                  inside one event; union-of-sets is the least lossy rule
+                  that does not grow without bound.
+    """
+    if old == new:
+        return old
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return new
+    merged = dict(old)
+    for key, value in new.items():
+        if key not in merged:
+            merged[key] = value
+        elif isinstance(merged[key], (list, tuple)) and isinstance(value, (list, tuple)):
+            combined = list(merged[key])
+            for item in value:
+                if item not in combined:
+                    combined.append(item)
+            merged[key] = combined
+        # scalars: keep the first one - see docstring
+    return merged
+
+
 class MemoryPipeline:
     """
-    Memory pipeline: gate (encode) -> short term buffer -> sleep -> long term / delete.
+    Memory pipeline: gate -> focus -> recent -> sleep -> long term / delete.
     """
 
     def __init__(self, data_dir="data/memory", policy=None):
@@ -107,9 +190,17 @@ class MemoryPipeline:
         if policy:
             self.policy.update(policy)
 
-        # Working memory
-        self.short_term = []          # [{key, kind, payload, salience, strength, ts, hits}]
-        self.seen_keys = {}           # key -> last seen ts (kept across sleeps, for dedup)
+        # Three layers (OPEN-15 B)
+        self.consciousness = []   # focus: [{key, kind, payload, salience, ...}]
+        self.recent = []          # soft-capacity cache below the focus
+        self.episodes = LongTermEpisodes(
+            data_dir,
+            budget=P.LONG_TERM_BUDGET,
+        )
+
+        # Segmentation state (OPEN-16 G), per kind of observation
+        self.segments = {}        # kind -> {seq, started, situation, shock_slot}
+        self.segment_seq = 0      # monotonic, so keys stay unique across restarts
 
         # Rhythm state
         self.last_sleep_ts = time.time()
@@ -117,7 +208,8 @@ class MemoryPipeline:
         self.total_recorded = 0
         self.total_dropped = 0
 
-        # Registered long term stores: name -> {"consolidate": fn, "forget": fn, "promote": fn}
+        # Registered long term subsystems: name -> {"consolidate", "forget"}
+        # (OPEN-17: no `promote` hook any more - the pipeline owns `episodes`.)
         self.stores = {}
         self.sleep_reports = []
 
@@ -126,12 +218,16 @@ class MemoryPipeline:
     # ------------------------------------------------------------------
     # Register long term stores
     # ------------------------------------------------------------------
-    def register(self, name, consolidate=None, forget=None, promote=None):
-        """Attach a subsystem. forget(budget) MUST actually delete weak memories."""
+    def register(self, name, consolidate=None, forget=None):
+        """
+        Attach a subsystem. forget() MUST really delete weak memories.
+
+        There is deliberately no `promote` parameter: promotion goes to the
+        pipeline's own long term episode store (OPEN-17).
+        """
         self.stores[name] = {
             "consolidate": consolidate,
             "forget": forget,
-            "promote": promote,
         }
 
     # ------------------------------------------------------------------
@@ -141,7 +237,8 @@ class MemoryPipeline:
         """
         Try to encode one sensed event.
 
-        Returns the short term entry, or None when the policy rejected it.
+        Returns the entry holding it (in the focus, or in `recent` if that
+        is where it lives), or None when the policy rejected it.
         """
         now = time.time() if now is None else now
         salience = max(0.0, min(1.0, float(salience)))
@@ -151,66 +248,105 @@ class MemoryPipeline:
             self.total_dropped += 1
             return None
 
-        key = _fingerprint(kind, payload)
+        key = self._segment(kind, payload, now)
 
-        # Gate 2: repeats are not stored twice, only reinforced
-        existing = self._find(key)
-        if existing is not None:
-            existing["hits"] += 1
-            existing["strength"] = min(1.0, existing["strength"] + self.policy["repeat_salience_boost"])
-            existing["salience"] = max(existing["salience"], salience)
-            existing["ts"] = now
-            self.seen_keys[key] = now
+        # Gate 2: still inside the same event -> reinforce, never duplicate
+        entry = self._find(key)
+        if entry is not None:
+            entry["hits"] += 1
+            entry["salience"] = max(entry["salience"], salience)
+            entry["payload"] = _merge_payload(entry["payload"], payload)
+            self._rehearse(entry, now)      # a repeat is a rehearsal
             self.events_since_sleep += 1
-            return existing
+            return entry
 
         entry = {
             "key": key,
             "kind": kind,
             "payload": payload,
             "salience": salience,
-            "strength": 0.5,
-            "ts": now,
+            "when_first": now,
+            "when_last_rehearsed": now,
             "hits": 1,
         }
-
-        # Gate 3: buffer full -> the weakest/oldest is forgotten on the spot
-        if len(self.short_term) >= self.policy["short_term_capacity"]:
-            self._evict_weakest()
-
-        self.short_term.append(entry)
-        self.seen_keys[key] = now
+        self._to_focus(entry)
         self.total_recorded += 1
         self.events_since_sleep += 1
         return entry
 
-    def _prune_seen_keys(self, now):
-        """Drop expired and oversized dedup entries. Returns how many were removed."""
-        cutoff = now - self.policy["seen_key_retention"]
-        before = len(self.seen_keys)
-        self.seen_keys = {k: ts for k, ts in self.seen_keys.items() if ts >= cutoff}
+    # -- segmentation (OPEN-16 G) -------------------------------------
+    def _segment(self, kind, payload, now):
+        """
+        Decide which event this observation belongs to, and return its key.
 
-        if len(self.seen_keys) > self.policy["seen_key_max"]:
-            overflow = sorted(self.seen_keys.items(), key=lambda kv: kv[1])
-            drop = len(self.seen_keys) - self.policy["seen_key_max"]
-            for k, _ in overflow[:drop]:
-                del self.seen_keys[k]
+        Default cut: the window expired (OPEN-16 primary rule).
+        Early cut:   the situation changed enough (G's exception), allowed
+                     at most once per window slot so that a burst of changes
+                     cannot degrade back into option E (one entry per frame).
+        """
+        state = self.segments.get(kind)
+        situation = _set_fields(payload)
+        window = float(self.policy["window_s"])
+        shock = float(self.policy["shock_threshold"])
+        slot = int(now // window) if window > 0 else 0
 
-        return before - len(self.seen_keys)
+        if state is None:
+            return self._open_segment(kind, payload, now, slot)
 
+        expired = (now - state["started"]) >= window
+        changed = _shock_distance(state["situation"], situation) >= shock
+        early = changed and slot != state["shock_slot"]
+
+        if expired or early:
+            return self._open_segment(kind, payload, now, slot,
+                                      shock_slot=slot if early else None)
+        return state["key"]
+
+    def _open_segment(self, kind, payload, now, slot, shock_slot=None):
+        self.segment_seq += 1
+        key = _fingerprint(kind, {"event": self.segment_seq})
+        self.segments[kind] = {
+            "key": key,
+            "seq": self.segment_seq,
+            "started": now,
+            # a sorted list, not a frozenset: this dict is written to disk
+            "situation": sorted(_set_fields(payload)),
+            "shock_slot": shock_slot,
+        }
+        return key
+
+    # -- the two short term layers ------------------------------------
     def _find(self, key):
-        for e in self.short_term:
-            if e["key"] == key:
-                return e
+        """An entry lives in the focus or in `recent`, never both."""
+        for entry in self.consciousness:
+            if entry["key"] == key:
+                return entry
+        for entry in self.recent:
+            if entry["key"] == key:
+                return entry
         return None
 
-    def _evict_weakest(self):
-        """When the buffer overflows, drop the least strong, least recent entry."""
-        if not self.short_term:
-            return
-        victim = min(self.short_term, key=lambda e: (e["strength"], e["ts"]))
-        self.short_term.remove(victim)
-        self.total_dropped += 1
+    def _rehearse(self, entry, now):
+        """A repeat refreshes the clock - and brings it back into focus."""
+        entry["when_last_rehearsed"] = now
+        for i, held in enumerate(self.recent):
+            if held is entry:                 # identity, not dict equality
+                self.recent.pop(i)
+                self._to_focus(entry)
+                return
+
+    def _to_focus(self, entry):
+        """
+        Put an entry in the focus.  If the focus is full, the least recently
+        rehearsed one *sinks* into `recent` - OPEN-15 D: nothing is deleted
+        just because a list hit its size (the old `total_dropped` eviction).
+        """
+        if len(self.consciousness) >= int(self.policy["conscious_capacity"]):
+            stalest = min(self.consciousness,
+                          key=lambda e: e["when_last_rehearsed"])
+            self.consciousness.remove(stalest)
+            self.recent.append(stalest)
+        self.consciousness.append(entry)
 
     # ------------------------------------------------------------------
     # When to sleep
@@ -234,6 +370,15 @@ class MemoryPipeline:
 
         Key constraint: this is a **single non-blocking pass**. The spine and
         the senses keep running throughout - a sleeping person still reacts.
+
+        Phases (OPEN-15):
+          1. flush the focus into `recent` - the focus is offline while asleep
+          2. replay: salient entries get their clock refreshed
+          3. forgetting: everything below the curve's floor is deleted
+          4. transfer: what was replayed AND is >= 1 day old goes long term
+          5. every registered subsystem consolidates and prunes itself
+          6. the long term episode store forgets too (OPEN-14)
+          7. bookkeeping
         """
         now = time.time() if now is None else now
         p = self.policy
@@ -243,38 +388,59 @@ class MemoryPipeline:
             "started": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
             "awake_seconds": round(now - self.last_sleep_ts, 1),
             "events_processed": self.events_since_sleep,
-            "short_term_in": len(self.short_term),
+            "focus_in": len(self.consciousness),
+            "recent_in": len(self.recent),
             "promoted": [],
             "dropped_below_threshold": 0,
-            "evicted": 0,
             "replayed": 0,
             "stores": {},
         }
 
-        # --- phase 1: decay (strength naturally falls asleep) ---
-        for e in self.short_term:
-            e["strength"] *= p["decay_per_sleep"]
+        # --- phase 1: flush the focus -------------------------------------
+        while self.consciousness:
+            self.recent.append(self.consciousness.pop(0))
 
-        # --- phase 2/3/4: replay, promote, drop ---
-        survivors = []
-        for e in self.short_term:
-            if e["salience"] >= p["replay_salience"]:
-                e["strength"] = min(1.0, e["strength"] + p["replay_boost"])
+        # --- phase 2: replay refreshes the clock of salient entries --------
+        # (this is what buys them time on the curve; it replaces the old
+        #  `replay_boost` strength patch, which stored a parameter instead)
+        replayed = []
+        for entry in self.recent:
+            if entry["salience"] >= p["replay_salience"]:
+                entry["when_last_rehearsed"] = now
+                replayed.append(entry)
                 report["replayed"] += 1
 
-            if e["strength"] >= p["promote_threshold"]:
-                if self._promote(e):
-                    report["promoted"].append(e["kind"])
-                survivors.append(e)
-            elif e["strength"] < p["forget_threshold"]:
+        # --- phase 3: the curve decides who stays --------------------------
+        # load = how crowded `recent` is: a crowded cache makes everything in
+        # it effectively older (soft capacity), it does not evict anyone.
+        load = len(self.recent) / float(max(1, int(p["recent_capacity"])))
+        survivors = []
+        for entry in self.recent:
+            elapsed = max(0.0, now - entry["when_last_rehearsed"])
+            if P.accessibility(elapsed, load) < float(p["forget_threshold"]):
                 report["dropped_below_threshold"] += 1
-            else:
-                survivors.append(e)
+                continue
+            survivors.append(entry)
+        self.recent = survivors
 
-        report["short_term_out"] = len(survivors)
-        self.short_term = survivors
+        # --- phase 4: selective transfer to long term ----------------------
+        # Criterion (OPEN-15): sleep replayed it AND it is at least a day old.
+        # `promote_threshold` is gone - it was a strength number, and the
+        # decision is now "did sleep actually spend a replay on it".
+        replayed_ids = {id(e) for e in replayed}
+        still = []
+        for entry in self.recent:
+            age = now - entry.get("when_first", now)
+            if id(entry) in replayed_ids and age >= float(p["promote_min_age"]):
+                if self._promote(entry, now):
+                    report["promoted"].append(entry["kind"])
+                    continue        # transferred: it lives long term now
+            still.append(entry)
+        self.recent = still
 
-        # --- phase 5: every long term store consolidates and prunes itself ---
+        report["recent_out"] = len(self.recent)
+
+        # --- phase 5: every registered subsystem consolidates and prunes ---
         for name, hooks in self.stores.items():
             store_report = {}
             try:
@@ -286,37 +452,36 @@ class MemoryPipeline:
                 store_report["error"] = f"{type(exc).__name__}: {exc}"
             report["stores"][name] = store_report
 
-        # --- phase 6: the dedup index has a budget too ---
-        pruned_keys = self._prune_seen_keys(now)
-        if pruned_keys:
-            report["seen_keys_pruned"] = pruned_keys
+        # --- phase 6: long term forgets by the same curve (OPEN-14) --------
+        report["episodes_forgotten"] = self.episodes.forget_pass(now=now)
+        report["episodes"] = self.episodes.count()
 
-        # --- finish: reset the rhythm ---
+        # --- phase 7: bookkeeping ------------------------------------------
         self.last_sleep_ts = now
         self.events_since_sleep = 0
         self.sleep_reports.append(report)
-        self.sleep_reports = self.sleep_reports[-p["max_sleep_reports"]:]
+        self.sleep_reports = self.sleep_reports[-int(p["max_sleep_reports"]):]
         self._save()
 
         return report
 
-    def _promote(self, entry):
-        hooks = self.stores.get(entry["kind"])
-        if hooks and hooks["promote"]:
-            try:
-                hooks["promote"](entry)
-                return True
-            except Exception:
-                return False
-        return False
+    def _promote(self, entry, now=None):
+        """Hand one entry to the long term episode store (OPEN-17)."""
+        try:
+            return bool(self.episodes.promote(entry, now=now))
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------
     # Observability
     # ------------------------------------------------------------------
     def stats(self):
         return {
-            "short_term": len(self.short_term),
-            "capacity": self.policy["short_term_capacity"],
+            "consciousness": len(self.consciousness),
+            "conscious_capacity": self.policy["conscious_capacity"],
+            "recent": len(self.recent),
+            "recent_capacity": self.policy["recent_capacity"],
+            "episodes": self.episodes.count(),
             "events_since_sleep": self.events_since_sleep,
             "awake_seconds": round(self.awake_seconds(), 1),
             "total_recorded": self.total_recorded,
@@ -347,17 +512,39 @@ class MemoryPipeline:
             self.total_recorded = state.get("total_recorded", 0)
             self.total_dropped = state.get("total_dropped", 0)
             self.events_since_sleep = state.get("events_since_sleep", 0)
-            self.seen_keys = state.get("seen_keys", {})
             self.sleep_reports = state.get("sleep_reports", [])
-            self.short_term = state.get("short_term", [])
-            # Time passed while the bot was "unconscious": working memory decays
-            elapsed = time.time() - self.last_sleep_ts
-            stale = min(0.9, elapsed / max(1.0, self.policy["sleep_after_seconds"]))
-            for e in self.short_term:
-                e["strength"] *= (1.0 - stale)
-            self.short_term = [
-                e for e in self.short_term
-                if e.get("strength", 0) >= self.policy["forget_threshold"]
+            self.consciousness = state.get("consciousness", [])
+            self.recent = state.get("recent", [])
+            self.segments = state.get("segments", {})
+            self.segment_seq = state.get("segment_seq", 0)
+
+            # Older ledgers called the layer below the focus `short_term`.
+            legacy = state.get("short_term")
+            if legacy:
+                self.recent = self.recent + [e for e in legacy
+                                             if isinstance(e, dict)]
+
+            # Entries written before OPEN-15 did not carry the two clocks.
+            for entry in self.recent + self.consciousness:
+                ts = entry.setdefault("when_last_rehearsed",
+                                      entry.get("ts", time.time()))
+                entry.setdefault("when_first", ts)
+                entry.setdefault("hits", 1)
+
+            # Time passed while the bot was "unconscious": everything decays
+            # on the curve (no more multiplying `strength` by a constant).
+            load = len(self.recent) / float(max(1, int(self.policy["recent_capacity"])))
+            floor = float(self.policy["forget_threshold"])
+            now = time.time()
+            self.recent = [
+                e for e in self.recent
+                if P.accessibility(max(0.0, now - e["when_last_rehearsed"]),
+                                   load) >= floor
+            ]
+            self.consciousness = [
+                e for e in self.consciousness
+                if P.accessibility(max(0.0, now - e["when_last_rehearsed"]),
+                                   load) >= floor
             ]
         except Exception:
             pass
@@ -369,9 +556,11 @@ class MemoryPipeline:
             "total_recorded": self.total_recorded,
             "total_dropped": self.total_dropped,
             "events_since_sleep": self.events_since_sleep,
-            "seen_keys": self.seen_keys,
+            "consciousness": self.consciousness,
+            "recent": self.recent,
+            "segments": self.segments,
+            "segment_seq": self.segment_seq,
             "sleep_reports": self.sleep_reports,
-            "short_term": self.short_term,
             "last_updated": datetime.now().isoformat(),
         }
         tmp = path + ".tmp"
