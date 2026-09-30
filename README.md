@@ -21,7 +21,7 @@ state is never committed to this repository — pictures are not memories.
 | `core/sensory.py` | Camera + microphone front end, body state (awareness, load) |
 | `core/seeing.py` / `core/hearing.py` | One store per sense, each with real forgetting |
 | `core/pure_learning.py` | Vocabulary, word patterns and concepts learned from experience |
-| `core/human_like.py` | Mood, trust, relationships, long-term life events |
+| `core/human_like.py` | Mood, personality, preferences, social state - holds no memories (`OPEN-19`) |
 | `core/baby_brain.py` | Developmental stages (birth → sensory → babbling → …) |
 | `core/pure_network.py` | The network itself, written in plain Python |
 | `ui/`, `gui_main.py` | Experimental GUI, will be rebuilt |
@@ -113,8 +113,12 @@ SLEEP LEDGER   (3 passes, newest last)
 ```
 
 `acc` is availability recomputed from the last-rehearsal clock every time you
-ask - no strength field is stored anywhere, because a stored parameter is not
-part of a memory.
+ask - no strength field is stored anywhere **in the pipeline's three layers**,
+because a stored parameter is not part of a memory (`DATA-4`/`DATA-5`). The
+`SEEING` block above still prints one: the sensory ledgers keep theirs until
+`IO-6` rewires them, which `OPEN-17` explicitly parked. `human_like` - the one
+store that also held `strength`/`importance` outside the senses - lost its
+whole memory subsystem instead (`OPEN-19`).
 
 **There is no sleep schedule.** `RHYTHM` shows sleep pressure against a pair
 of thresholds that the circadian signal moves up and down; crossing upward is

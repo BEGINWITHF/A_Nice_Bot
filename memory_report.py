@@ -229,7 +229,7 @@ def show_hearing():
 
 def show_human():
     state = load(f"{DATA}/pure/human/human_state.json")
-    head("HUMAN   (long term: relationships, mood, life events)")
+    head("HUMAN   (state: mood, personality, preferences - holds no memories)")
     if not state:
         print("  no state yet")
         return
@@ -238,16 +238,15 @@ def show_human():
           f"mood energy {state.get('mood_energy', 0):.2f}  "
           f"energy {state.get('energy_level', 0):.2f}  "
           f"trust {context.get('trust_level', 0)}")
-    print(f"{len(state.get('long_term_memories', []))} long term memories, "
-          f"{len(state.get('interaction_memories', []))} interaction memories, "
-          f"{context.get('conversation_count', 0)} interactions")
-
-    for memory in state.get("long_term_memories", [])[-6:]:
-        if isinstance(memory, dict):
-            text = memory.get("text") or memory.get("content") or str(memory)
-            if len(text) > 70:
-                text = text[:67] + "..."
-            print(f"  [{memory.get('type', 'event')}] {text}")
+    print(f"{context.get('conversation_count', 0)} interactions")
+    # OPEN-19: this store used to keep its own `interaction_memories` /
+    # `long_term_memories` alongside the pipeline's three layers.  The author
+    # had it cut (DATA-5, IO-2, OPEN-10, OPEN-15), so a file that still shows
+    # them has simply not been rewritten yet - the next save drops them.
+    leftovers = [k for k in ("interaction_memories", "long_term_memories")
+                 if state.get(k)]
+    if leftovers:
+        print(f"  legacy keys awaiting the next save: {', '.join(leftovers)}")
 
 
 def show_learning():

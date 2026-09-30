@@ -37,11 +37,6 @@ def register_stores(pipeline, senses, brain):
         consolidate=senses.seeing.consolidate_visual_memory,
         forget=senses.seeing.forget_pass,
     )
-    pipeline.register(
-        "human",
-        consolidate=brain.human.sleep_like_consolidation,
-        forget=brain.human.forget_pass,
-    )
     pipeline.register("learning", forget=brain.forget_pass)
     pipeline.register("sensory", forget=senses.forget_pass)
 

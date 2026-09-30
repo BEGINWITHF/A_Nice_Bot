@@ -10,6 +10,27 @@ import os
 from datetime import datetime
 from core.pure_network import PureNeuralNetwork
 from core.human_like import HumanLikeSystem
+from core.parameters import FORGET_THRESHOLD, accessibility
+
+
+def _seconds_since(stamp, now):
+    """
+    Seconds between an ISO timestamp and `now`.
+
+    Anything unreadable counts as "an eternity ago", which on the forgetting
+    curve means the entry is already gone: a corrupt timestamp must never
+    make a memory immortal.
+    """
+    if not isinstance(stamp, str):
+        return float("inf")
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        return float("inf")
+    if moment.tzinfo is not None:
+        moment = moment.replace(tzinfo=None)
+    return max(0.0, (now - moment).total_seconds())
+
 
 class PureLearningSystem:
     """
@@ -70,7 +91,15 @@ class PureLearningSystem:
                     self.index_to_word = {int(k): v for k, v in state.get("index_to_word", {}).items()}
                     self.word_frequency = state.get("word_frequency", {})
                     self.vocabulary_size = state.get("vocabulary_size", 4)
-                    self.patterns = state.get("patterns", [])
+                    # DATA-5: no pattern may carry a score.  Older ledgers
+                    # stored `strength`; dropping it here is what migrates them.
+                    self.patterns = [
+                        {"from": p["from"], "to": p["to"],
+                         "learned_at": p.get("learned_at")
+                         or datetime.now().isoformat()}
+                        for p in state.get("patterns", [])
+                        if isinstance(p, dict) and "from" in p and "to" in p
+                    ]
                     self.concepts = state.get("concepts", {})
                     
                 # Load neural networks
@@ -172,14 +201,21 @@ class PureLearningSystem:
         return results
     
     def learn_pattern(self, sequence):
-        """Learn a pattern from a sequence of words"""
+        """
+        Learn a pattern from a sequence of words.
+
+        Re-meeting a pair is a rehearsal, not a higher score: it pushes
+        `learned_at` forward, and availability is derived from that clock
+        (DATA-5 - a memory may not carry a parameter of its own; the curve is
+        computed, never stored, per parameter-values section 4).
+        """
         for i in range(len(sequence) - 1):
             pair = (sequence[i], sequence[i + 1])
             
             found = False
             for p in self.patterns:
                 if p["from"] == pair[0] and p["to"] == pair[1]:
-                    p["strength"] += 1
+                    p["learned_at"] = datetime.now().isoformat()
                     found = True
                     break
             
@@ -187,7 +223,6 @@ class PureLearningSystem:
                 self.patterns.append({
                     "from": pair[0],
                     "to": pair[1],
-                    "strength": 1,
                     "learned_at": datetime.now().isoformat()
                 })
         
@@ -234,11 +269,22 @@ class PureLearningSystem:
         }
 
     # ------------------------------------------------------------------
-    # 睡眠期遗忘（由 core.memory_pipeline.MemoryPipeline.sleep 调用）
+    # Forgetting during sleep (called by MemoryPipeline.sleep)
     # ------------------------------------------------------------------
-    def forget_pass(self, max_patterns=2000, max_concepts=500, forget_threshold=0.05):
+    def forget_pass(self, max_patterns=2000, max_concepts=500):
         """
-        Trim patterns and concepts to budget - this MUST really delete.
+        Sleep-time pruning, called by MemoryPipeline.sleep().
+
+        Nothing is compared against a stored score - there is none left to
+        compare with.  Availability is computed from `learned_at` on the same
+        two-stage curve the other layers use (OPEN-11b: forgetting is a curve,
+        not a step; OPEN-14: it runs during sleep only).  The budgets stay,
+        because they are an engineering ceiling rather than a memory rule;
+        when one bites, the oldest `learned_at` goes first.
+
+        The old `forget_threshold=0.05` parameter is gone too: it was a
+        magic number with no source (DATA-6), and the floor it used to hold
+        is now FORGET_THRESHOLD from core/parameters.py.
 
         Note: the vocabulary (word_to_index / index_to_word) never takes part
         in pruning, because the neural net encodes words by index; dropping a
@@ -246,31 +292,41 @@ class PureLearningSystem:
         the level of "which patterns are worth keeping", not "which words have
         ever been heard".
         """
-        dropped_patterns = 0
-        dropped_concepts = 0
+        now = datetime.now()
+        was_patterns = len(self.patterns)
+        was_concepts = len(self.concepts)
 
-        # Patterns: sort by strength, the weak ones go first
-        before = len(self.patterns)
-        alive = [p for p in self.patterns if p.get("strength", 1) > forget_threshold]
-        alive.sort(key=lambda p: p.get("strength", 0), reverse=True)
-        dropped_patterns += before - len(alive)
-        if len(alive) > max_patterns:
-            dropped_patterns += len(alive) - max_patterns
-            alive = alive[:max_patterns]
-        self.patterns = alive
+        # Patterns: the curve alone decides (DATA-5 - `strength` is deleted).
+        load = len(self.patterns) / float(max(1, max_patterns))
+        kept = [p for p in self.patterns
+                if accessibility(_seconds_since(p.get("learned_at"), now), load)
+                >= FORGET_THRESHOLD]
+        if len(kept) > max_patterns:
+            kept.sort(key=lambda p: p.get("learned_at", ""))   # oldest first
+            kept = kept[len(kept) - max_patterns:]             # newest survive
+        self.patterns = kept
 
-        # Concepts: word frequency acts as strength (never counted = weak)
-        if len(self.concepts) > max_concepts:
+        # Concepts: word frequency is semantic knowledge - the brain does track
+        # which words are common, which is why the audit kept `word_frequency`
+        # as a DATA-5 exception - so it ranks the survivors.  The curve still
+        # has to agree before anything is deleted.
+        load = len(self.concepts) / float(max(1, max_concepts))
+        survivors = {w: d for w, d in self.concepts.items()
+                     if accessibility(_seconds_since(d.get("learned_at"), now),
+                                      load) >= FORGET_THRESHOLD}
+        if len(survivors) > max_concepts:
             ranked = sorted(
-                self.concepts.items(),
-                key=lambda kv: (self.word_frequency.get(kv[0], 0), kv[1].get("learned_at", "")),
+                survivors.items(),
+                key=lambda kv: (self.word_frequency.get(kv[0], 0),
+                                kv[1].get("learned_at", "")),
                 reverse=True,
             )
-            keep = dict(ranked[:max_concepts])
-            dropped_concepts = len(self.concepts) - len(keep)
-            self.concepts = keep
+            survivors = dict(ranked[:max_concepts])
+        self.concepts = survivors
 
-        if dropped_patterns or dropped_concepts:
+        report = {"patterns": was_patterns - len(self.patterns),
+                  "concepts": was_concepts - len(self.concepts)}
+        if report["patterns"] or report["concepts"]:
             self._save_state()
 
-        return {"patterns": dropped_patterns, "concepts": dropped_concepts}
+        return report

@@ -1,6 +1,21 @@
 """
 Human-Like System - Emotions, Free Will, Personality
 Makes the AI behave like a real human
+
+OPEN-19 (author, 2026-09-30, "delete the memory subsystem as a whole"):
+this class used to keep `interaction_memories` / `long_term_memories` plus
+its own consolidate / replay / prune trio.  It went for four reasons:
+
+  1. DATA-5 - it stored `strength`, `importance`, `emotional_impact` and
+     `replay_count`, none of which a brain holds as a field of a memory;
+  2. IO-2  - `process_input(user_input, ...)` reads text, and you cannot
+     type into someone's brain;
+  3. OPEN-10 - its only writer was never called, so the list sat empty;
+  4. OPEN-15 - consolidation and forgetting belong to the three layer
+     pipeline now; this was a second implementation of the same job.
+
+What is kept is state a brain also has: emotion, mood, personality,
+preferences, social context.
 """
 
 import random
@@ -78,11 +93,6 @@ class HumanLikeSystem:
             "last_interaction": None,
         }
         
-        # Memory of interactions (working memory)
-        self.interaction_memories = []
-        # Long term store: promoted here during sleep, this is what survives
-        self.long_term_memories = []
-        
         # Current state
         self.want_to_talk = True
         self.energy_level = 0.7
@@ -114,12 +124,6 @@ class HumanLikeSystem:
                     # Load state
                     self.want_to_talk = state.get("want_to_talk", True)
                     self.energy_level = state.get("energy_level", 0.7)
-                    # Sleep consolidation is worthless if what it consolidates
-                    # is never written to disk - these two used to be RAM only
-                    self.interaction_memories = state.get(
-                        "interaction_memories", self.interaction_memories)
-                    self.long_term_memories = state.get(
-                        "long_term_memories", self.long_term_memories)
             except:
                 pass
     
@@ -135,8 +139,6 @@ class HumanLikeSystem:
             "social_context": self.social_context,
             "want_to_talk": self.want_to_talk,
             "energy_level": self.energy_level,
-            "interaction_memories": self.interaction_memories,
-            "long_term_memories": self.long_term_memories,
             "last_updated": datetime.now().isoformat()
         }
         tmp = state_file + ".tmp"
@@ -362,293 +364,5 @@ class HumanLikeSystem:
             "want_to_talk": self.want_to_talk,
             "dominant_emotion": max(self.emotions.items(), key=lambda x: x[1].intensity)[0],
             "personality_traits": self.personality,
-            "conversation_count": self.social_context["conversation_count"],
-            "memories_consolidated": len(self.interaction_memories)
+            "conversation_count": self.social_context["conversation_count"]
         }
-    
-    def consolidate_memories(self):
-        """
-        Memory Consolidation Process
-        Like sleep-dependent memory consolidation in the brain
-        
-        During sleep (or rest periods), memories are:
-        1. Reactivated (hippocampal replay)
-        2. Transferred to long-term storage (neocortex)
-        3. Strengthened based on emotional importance
-        4. Weak memories are pruned
-        """
-        consolidated = 0
-        
-        # Reactivate and strengthen important memories
-        for memory in self.interaction_memories:
-            importance = memory.get("importance", 0.5)
-            emotional_impact = memory.get("emotional_impact", 0.3)
-            
-            # Calculate memory strength
-            strength = importance * 0.6 + emotional_impact * 0.4
-            
-            # Strengthen strong memories
-            if strength > 0.5:
-                memory["strength"] = min(1.0, strength + 0.1)
-                consolidated += 1
-            
-            # Decay weak memories
-            if strength < 0.2:
-                memory["strength"] *= 0.8
-        
-        # Prune very weak memories (keeping at least some)
-        if len(self.interaction_memories) > 10:
-            self.interaction_memories = [
-                m for m in self.interaction_memories 
-                if m.get("strength", 0.5) > 0.1
-            ][:50]  # Keep max 50 strong memories
-        
-        self._save_state()
-        return consolidated
-    
-    def sleep_like_consolidation(self):
-        """
-        Sleep-like consolidation process
-        Simulates the brain's sleep cycle for memory consolidation
-        
-        Phases:
-        1. Slow-wave sleep: Memory replay
-        2. REM sleep: Emotional processing
-        3. Sleep spindles: Integration with existing memories
-        """
-        # Phase 1: Slow-wave sleep (memory replay)
-        replayed = self._replay_memories()
-        
-        # Phase 2: REM sleep (emotional processing)
-        emotional_processed = self._process_emotions_during_sleep()
-        
-        # Phase 3: Sleep spindles (integration)
-        integrated = self._integrate_memories()
-        
-        # Reset energy (like waking up refreshed)
-        self.energy_level = min(1.0, self.energy_level + 0.3)
-        
-        # Update mood after sleep
-        self._update_mood()
-        
-        self._save_state()
-        
-        return {
-            "replayed": replayed,
-            "emotional_processed": emotional_processed,
-            "integrated": integrated,
-            "energy_restored": self.energy_level
-        }
-    
-    def _replay_memories(self):
-        """
-        Memory Replay during sleep
-        Like hippocampal replay during slow-wave sleep
-        """
-        replayed = 0
-        
-        # Replay recent memories
-        recent_memories = self.interaction_memories[-10:] if self.interaction_memories else []
-        
-        for memory in recent_memories:
-            # Reactivate the memory
-            importance = memory.get("importance", 0.5)
-            
-            # Strengthen based on replay
-            if "replay_count" not in memory:
-                memory["replay_count"] = 0
-            memory["replay_count"] += 1
-            
-            # Increase strength with each replay
-            memory["strength"] = min(1.0, memory.get("strength", 0.5) + 0.02)
-            replayed += 1
-        
-        return replayed
-    
-    def _process_emotions_during_sleep(self):
-        """
-        Emotional processing during REM sleep
-        Like the amygdala processing emotions during dreams
-        """
-        processed = 0
-        
-        # Find emotionally charged memories
-        emotional_memories = [
-            m for m in self.interaction_memories 
-            if m.get("emotional_impact", 0) > 0.5
-        ]
-        
-        for memory in emotional_memories:
-            # Process and regulate the emotion
-            emotional_impact = memory.get("emotional_impact", 0.5)
-            
-            # Reduce extreme emotions (emotional regulation)
-            if emotional_impact > 0.8:
-                memory["emotional_impact"] = emotional_impact * 0.9
-            
-            # Increase strength of emotionally significant memories
-            memory["strength"] = min(1.0, memory.get("strength", 0.5) + 0.05)
-            processed += 1
-        
-        return processed
-    
-    def _integrate_memories(self):
-        """
-        Memory integration during sleep spindles
-        Like thalamocortical spindles connecting memories
-        """
-        integrated = 0
-        
-        # Group similar memories
-        memory_groups = {}
-        for memory in self.interaction_memories:
-            topic = memory.get("topic", "general")
-            if topic not in memory_groups:
-                memory_groups[topic] = []
-            memory_groups[topic].append(memory)
-        
-        # Integrate memories within groups
-        for topic, memories in memory_groups.items():
-            if len(memories) > 1:
-                # Create a consolidated memory
-                avg_importance = sum(m.get("importance", 0.5) for m in memories) / len(memories)
-                avg_emotional = sum(m.get("emotional_impact", 0.3) for m in memories) / len(memories)
-                
-                # Mark memories as integrated
-                for memory in memories:
-                    memory["integrated"] = True
-                    integrated += 1
-        
-        return integrated
-    
-    def forget_pass(self, max_working=20, max_long_term=500,
-                    promote_threshold=0.6, forget_threshold=0.08):
-        """
-        Sleep-time promotion and pruning, called by MemoryPipeline.sleep().
-
-        interaction_memories is working memory - what happened while awake.
-        long_term_memories is what survives. Sleep moves the strong ones
-        across the boundary and deletes what never mattered. Before this
-        method existed nothing was ever deleted, and neither list was ever
-        written to disk, so consolidation was lost on exit.
-        """
-        report = {"promoted": 0, "working_dropped": 0,
-                  "long_term_dropped": 0, "long_term_size": 0}
-
-        still_working = []
-        for m in self.interaction_memories:
-            strength = m.get("strength", 0.5)
-
-            if strength >= promote_threshold:
-                promoted = dict(m)
-                promoted["promoted_at"] = datetime.now().isoformat()
-                self._upsert_long_term(promoted)
-                report["promoted"] += 1
-            elif strength < forget_threshold and len(self.interaction_memories) > max_working:
-                report["working_dropped"] += 1
-            else:
-                still_working.append(m)
-
-        # Working memory has a hard budget: the day is not remembered in full
-        if len(still_working) > max_working:
-            still_working.sort(key=lambda m: m.get("strength", 0.5), reverse=True)
-            report["working_dropped"] += len(still_working) - max_working
-            still_working = still_working[:max_working]
-        self.interaction_memories = still_working
-
-        # Long term slowly fades too, but never below a floor - a person keeps
-        # the shape of their past even when the details blur
-        faded = []
-        for m in self.long_term_memories:
-            m["strength"] = m.get("strength", 0.5) * 0.97
-            faded.append(m)
-        self.long_term_memories = faded
-
-        if len(self.long_term_memories) > max_long_term:
-            self.long_term_memories.sort(
-                key=lambda m: (m.get("strength", 0.5), m.get("timestamp", "")),
-                reverse=True)
-            report["long_term_dropped"] = len(self.long_term_memories) - max_long_term
-            self.long_term_memories = self.long_term_memories[:max_long_term]
-
-        report["long_term_size"] = len(self.long_term_memories)
-
-        if any(report.values()):
-            self._save_state()
-        return report
-
-    def _upsert_long_term(self, memory):
-        """Insert or reinforce a long term memory (repetition beats novelty)."""
-        for existing in self.long_term_memories:
-            if existing.get("input") == memory.get("input"):
-                existing["strength"] = min(
-                    1.0, existing.get("strength", 0.5) + 0.1)
-                existing["repeat_count"] = existing.get("repeat_count", 1) + 1
-                return existing
-        memory["strength"] = max(memory.get("strength", 0.5), 0.6)
-        memory.setdefault("repeat_count", 1)
-        self.long_term_memories.append(memory)
-        return memory
-
-    def store_interaction_memory(self, input_text, response, emotional_impact=0.5):
-        """
-        Store an interaction in memory for later consolidation
-        Like encoding new memories during waking hours
-        """
-        memory = {
-            "input": input_text,
-            "response": response,
-            "timestamp": datetime.now().isoformat(),
-            "emotional_impact": emotional_impact,
-            "importance": self._calculate_importance(input_text),
-            "topic": self._extract_topic(input_text),
-            "mood_at_time": self.mood,
-            "strength": 0.5,
-            "replay_count": 0,
-            "integrated": False
-        }
-        
-        self.interaction_memories.append(memory)
-        
-        # Keep only recent memories in working memory
-        if len(self.interaction_memories) > 20:
-            self.interaction_memories = self.interaction_memories[-20:]
-        
-        self._save_state()
-        return memory
-    
-    def _calculate_importance(self, text):
-        """Calculate importance of an interaction"""
-        importance = 0.3  # Base importance
-        
-        # Questions are important
-        if "?" in text:
-            importance += 0.2
-        
-        # Emotional words increase importance
-        emotional_words = ["love", "hate", "fear", "happy", "sad", "angry", "excited"]
-        for word in emotional_words:
-            if word in text.lower():
-                importance += 0.1
-        
-        # Longer inputs are more important
-        if len(text) > 50:
-            importance += 0.1
-        
-        return min(1.0, importance)
-    
-    def _extract_topic(self, text):
-        """Extract topic from text for memory organization"""
-        text_lower = text.lower()
-        
-        # Simple topic extraction
-        if any(word in text_lower for word in ["hello", "hi", "hey"]):
-            return "greeting"
-        elif any(word in text_lower for word in ["how", "what", "why", "when", "where"]):
-            return "question"
-        elif any(word in text_lower for word in ["play", "game", "fun"]):
-            return "play"
-        elif any(word in text_lower for word in ["love", "like", "feel"]):
-            return "emotional"
-        
-        return "general"

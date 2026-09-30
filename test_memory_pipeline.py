@@ -8,8 +8,10 @@ Run:
     python -m pytest test_memory_pipeline.py -v
 """
 
+import json
 import os
 import sys
+from datetime import datetime
 
 import pytest
 
@@ -637,59 +639,105 @@ def test_seeing_forget_pass_really_deletes(tmp_path):
     assert "memorable" in reloaded.known_objects
 
 
-def test_human_like_promotes_working_memory_and_persists(tmp_path):
+def test_human_like_keeps_state_but_holds_no_memories(tmp_path):
+    """OPEN-19 (author 2026-09-30: delete the memory subsystem as a whole)."""
     h = HumanLikeSystem(str(tmp_path))
-    h.store_interaction_memory("a loud sound", "startle")
-    h.store_interaction_memory("a quiet room", "ignore")
-    h.interaction_memories[0]["strength"] = 0.9   # worth keeping
-    h.interaction_memories[1]["strength"] = 0.5
 
-    report = h.forget_pass()
+    # the four members of a memory subsystem are gone, not just empty
+    assert not hasattr(h, "interaction_memories")
+    assert not hasattr(h, "long_term_memories")
+    assert not hasattr(h, "forget_pass")
+    assert not hasattr(h, "sleep_like_consolidation")
 
-    assert report["promoted"] == 1
-    assert len(h.long_term_memories) == 1
-    assert len(h.interaction_memories) == 1
-
-    # COG-2/COG-3: what sleep sorted must still be there after a restart
+    # ...while state a brain does have still works and still persists
+    h.process_input("hello there", "world")
     reloaded = HumanLikeSystem(str(tmp_path))
-    assert len(reloaded.long_term_memories) == 1
-    assert len(reloaded.interaction_memories) == 1
+    assert reloaded.personality == h.personality
+    assert reloaded.emotions["happy"].intensity == h.emotions["happy"].intensity
+    assert reloaded.social_context["conversation_count"] == 1
 
 
-def test_human_like_long_term_merges_repeats(tmp_path):
+def test_human_state_file_carries_no_parameter_fields(tmp_path):
+    """DATA-5: after a save, no `strength` / `importance` may be on disk."""
     h = HumanLikeSystem(str(tmp_path))
-    h.store_interaction_memory("the same event", "x")
-    h.interaction_memories[0]["strength"] = 0.9
-    h.forget_pass()
+    h.process_input("hi", "world")
 
-    h.store_interaction_memory("the same event", "x")
-    h.interaction_memories[0]["strength"] = 0.9
-    h.forget_pass()
+    path = os.path.join(str(tmp_path), "human_state.json")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
 
-    assert len(h.long_term_memories) == 1
-    assert h.long_term_memories[0]["repeat_count"] == 2
+    assert "interaction_memories" not in text
+    assert "long_term_memories" not in text
+    assert "emotional_impact" not in text
+    assert '"replay_count"' not in text
 
 
-def test_pure_learning_forget_pass_prunes_patterns_and_concepts(tmp_path):
+def test_pure_learning_forgets_by_the_curve_not_by_a_score(tmp_path):
+    """DATA-5 + OPEN-19: no `strength` anywhere; MCM(now - learned_at) decides."""
     ai = PureLearningSystem(str(tmp_path))
+    now = datetime.now()
+    fresh = now.isoformat()
+    long_ago = datetime.fromtimestamp(now.timestamp() - 400 * 86400).isoformat()
+
     ai.patterns = (
-        [{"from": f"a{i}", "to": f"b{i}", "strength": 0.9} for i in range(10)]
-        + [{"from": f"c{i}", "to": f"d{i}", "strength": 0.01} for i in range(40)]
+        [{"from": f"a{i}", "to": f"b{i}", "learned_at": fresh} for i in range(10)]
+        + [{"from": f"c{i}", "to": f"d{i}", "learned_at": long_ago} for i in range(40)]
     )
     for i in range(600):
-        ai.concepts[f"word{i}"] = {"context": "ctx", "learned_at": "2026-01-01"}
+        ai.concepts[f"word{i}"] = {"context": "ctx", "learned_at": fresh}
         ai.word_frequency[f"word{i}"] = i
+    ai.concepts["ancient"] = {"context": "ctx", "learned_at": long_ago}
 
     report = ai.forget_pass(max_patterns=5, max_concepts=10)
 
+    #40 patterns never rehearsed in 400 days are past the floor (112 days)
+    assert all("strength" not in p for p in ai.patterns)
     assert len(ai.patterns) == 5
-    # the survivors are the strong ones
-    assert all(p["strength"] > 0.5 for p in ai.patterns)
+    assert all(p["learned_at"] == fresh for p in ai.patterns)
+
+    # the curve deletes the ancient concept before any ranking gets to speak
+    assert "ancient" not in ai.concepts
     assert len(ai.concepts) == 10
-    # highest frequency concepts win
-    assert "word599" in ai.concepts
+    assert "word599" in ai.concepts          # frequency still ranks survivors
+
     assert report["patterns"] == 45
-    assert report["concepts"] == 590
+    assert report["concepts"] == 591
+
+
+def test_rehearsing_a_pattern_only_moves_its_clock(tmp_path):
+    """Repetition is a rehearsal, not a score the entry carries around."""
+    ai = PureLearningSystem(str(tmp_path))
+
+    ai.learn_pattern(["the", "cat", "sat"])
+    assert set(ai.patterns[0]) == {"from", "to", "learned_at"}
+
+    before = ai.patterns[0]["learned_at"]
+    ai.learn_pattern(["the", "cat"])
+    assert len(ai.patterns) == 2
+    assert set(ai.patterns[1]) == {"from", "to", "learned_at"}
+
+    # meeting the same pair again must not duplicate or score it
+    ai.learn_pattern(["the", "cat"])
+    assert len(ai.patterns) == 2
+    assert ai.patterns[1]["learned_at"] >= before
+
+
+def test_legacy_patterns_lose_their_strength_on_load(tmp_path):
+    """A file written before OPEN-19 must migrate, not keep the field."""
+    ai = PureLearningSystem(str(tmp_path))
+    state_file = os.path.join(str(tmp_path), "learning_state.json")
+    with open(state_file, "w", encoding="utf-8") as fh:
+        json.dump({
+            "word_to_index": {"<UNK>": 0}, "index_to_word": {"0": "<UNK>"},
+            "word_frequency": {}, "vocabulary_size": 4,
+            "patterns": [{"from": "a", "to": "b", "strength": 7,
+                          "learned_at": datetime.now().isoformat()}],
+            "concepts": {},
+        }, fh)
+
+    reloaded = PureLearningSystem(str(tmp_path))
+
+    assert set(reloaded.patterns[0]) == {"from", "to", "learned_at"}
 
 
 def test_pure_learning_vocabulary_survives_pruning(tmp_path):
