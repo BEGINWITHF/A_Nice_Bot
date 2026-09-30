@@ -405,7 +405,7 @@ def test_a_severe_observation_startles_the_bot_awake(tmp_path):
     the reason the bot is awake."""
     # 06:00 is the circadian trough: the upper threshold sits at its lowest
     # (0.55), so a pressure of 0.6 would send it straight back to sleep.
-    p = new_pipeline(tmp_path, arousal_s=3600.0)
+    p = new_pipeline(tmp_path)          # shipped AROUSAL_S, not a test value
     p.asleep = True
     p.pressure = 0.6
     p.pressure_ts = 21600.0
@@ -417,12 +417,12 @@ def test_a_severe_observation_startles_the_bot_awake(tmp_path):
     assert entry is not None
     assert p.asleep is False
     assert p.startle_count == 1
-    assert p.aroused_until == 21600.0 + 3600.0
+    assert p.aroused_until == 21600.0 + P.AROUSAL_S      # 10 min, author's call
 
     # Skeldon's "wake effort": pressure still says sleep, the arousal holds it
     assert p.due(21630.0) is False
     # ...and once that expires the model decides again
-    assert p.due(21600.0 + 3601.0) is True
+    assert p.due(21600.0 + P.AROUSAL_S + 1.0) is True
 
 
 def test_startle_wake_effort_can_expire(tmp_path):

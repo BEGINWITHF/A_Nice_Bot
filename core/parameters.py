@@ -262,16 +262,19 @@ SLEEP_CYCLE_S = 90 * 60
 # SWAP:       any salience quantile; record() reads it once per observation.
 STARTLE_SALIENCE = 0.8
 
-# # ASSUMPTION: how long it stays alertly awake after being startled awake.
-#               Without this the two-process model would put it straight back
-#               to sleep: a startled bot has pressure still above H-, and
-#               while that holds, H+ says "sleep".  Skeldon 2025 calls the
-#               mechanism that keeps you awake in exactly that situation
-#               "wake effort" - the upper threshold is moved so wake can be
-#               maintained.  One hour is our stand-in for that shift.
-# SWAP:       set it to 0 and the bot falls back asleep as soon as the model
-#             says so; raise it for a longer alert watch.
-AROUSAL_S = 60 * 60
+# SOURCE: the author's answer 2026-09-30 ("10分钟就好").  No paper measures how
+#         long a startled organism stays alert, but OPEN-13 still wants the
+#         provenance - here it is a decision rather than a citation.
+# Why it has to exist at all: without it the two-process model would put the
+#   bot straight back to sleep.  A startled bot has pressure still above H-,
+#   and while that holds, H+ says "sleep".  Skeldon 2025 calls the mechanism
+#   that keeps you awake in exactly that situation "wake effort" - the upper
+#   threshold is moved so that wake can be maintained.  This window is our
+#   stand-in for that shift, and the gap between the thresholds (always 0.5)
+#   is what makes the region between them bistable in the first place.
+# SWAP: set it to 0 and the bot falls back asleep as soon as the model says
+#       so; raise it for a longer alert watch (a fire keeps it up all night).
+AROUSAL_S = 10 * 60
 
 # How many sleep reports the ledger keeps.
 MAX_SLEEP_REPORTS = 20
