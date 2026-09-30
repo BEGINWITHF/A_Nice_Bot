@@ -98,7 +98,21 @@ class SensorySystem:
         Capture and process camera input.
         Like opening your eyes.
         """
-        result = self.seeing.see_camera()
+        return self._after_seeing(self.seeing.see_camera())
+
+    def see_frame(self, frame, source="camera"):
+        """
+        Perceive one frame that arrived from anywhere.
+
+        CAP-7 puts remote devices behind the host and the host is what
+        perceives them, so a frame off the wire loads the body exactly the
+        way one off the local camera does - same lift in load, same lift in
+        awareness, same ledger.
+        """
+        return self._after_seeing(
+            self.seeing.see_frame(frame, source=source))
+
+    def _after_seeing(self, result):
         self.sensory_load += 0.2
         self.awareness_level = min(1.0, self.awareness_level + 0.1)
         self._save_state()

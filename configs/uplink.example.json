@@ -1,0 +1,8 @@
+{
+  "bind": "0.0.0.0",
+  "port": 8765,
+  "host": "192.168.1.10",
+  "token": "CHANGE_ME",
+  "device_id": "desk-camera",
+  "interval_s": 1.0
+}

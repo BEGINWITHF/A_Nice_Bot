@@ -15,7 +15,11 @@ state is never committed to this repository — pictures are not memories.
 | `main.py` | The main loop: see → hear → memorise → sleep when due |
 | `memory_report.py` | **Read-only view** of everything the bot currently holds |
 | `clean_memories.py` | Wipe all state and start from a blank mind |
+| `device.py` | A **dumb sense organ**: ships raw frames and raw audio at the host (`CAP-7`) |
+| `uplink_config.py` | Loads the deployment file: host address + shared token (`CAP-8`, `OPEN-7`) |
 | `core/memory_pipeline.py` | The gate: when to memorise, when to forget, when to sleep |
+| `core/uplink.py` | HTTP/REST uplink server, standard library only (`CAP-5`, `CAP-6`) |
+| `core/host_ingest.py` | Where a remote observation is turned into a perception, then gated (`CAP-7`) |
 | `core/parameters.py` | Every number the memory system uses, with its source and how to swap it (`OPEN-13`) |
 | `core/episodes.py` | The long-term episode store sleep transfers into (`OPEN-17`) |
 | `core/sensory.py` | Camera + microphone front end, body state (awareness, load) |
@@ -71,6 +75,54 @@ the sleep rhythm comes due it prints a sleep report:
 
 Press `Ctrl+C` to stop. The bot sleeps once more before exiting, so nothing is
 lost.
+
+## More eyes and ears
+
+The host also listens for **other machines feeding it the same two senses**
+(`CAP-1`): the device runs `device.py` and ships raw bytes, the host decodes
+them and lets the AI perceive them. The device analyses nothing - it is a
+sense organ, and perception plus the salience gate stay on the host
+(`CAP-7`).
+
+```bash
+python device.py --once    # one round: check the wiring, then stop
+python device.py           # keep feeding
+```
+
+Both halves read one file, written on the first run:
+
+```text
+configs/uplink.json
+{
+  "bind": "0.0.0.0",        <- host side: which interfaces to listen on
+  "port": 8765,
+  "host": "192.168.1.10",   <- device side: where the host is, typed by hand
+  "token": "<192 random bits>",
+  "device_id": "desk-camera",
+  "interval_s": 1.0
+}
+```
+
+Copy it to each device and set `host` to an address that machine can reach —
+that is the whole discovery story (`CAP-8`: no broadcasting, no mDNS). The
+`token` is checked on every request as an RFC 6750 bearer (`OPEN-7`), and a
+placeholder value refuses to start on either side, because a default password
+is worse than none. If a device cannot connect, it says which key to fix:
+
+```text
+uplink failed: cannot reach http://192.168.1.10:8765 (...). CAP-8 says
+`host` is typed by hand - check it is this machine's address and that the
+port matches.
+```
+
+`GET /healthz` (no token needed) answers whether the address and port are
+right. What arrives lands in the same `seeing` and `hearing` stores as the
+bot's own eyes and ears, so `python memory_report.py` shows it without
+caring where it came from.
+
+Only one direction exists so far: device → host, with an acknowledgement and
+nothing else in the reply. Commands would come later as a WebSocket stacked
+on top of this (`CAP-6`).
 
 ## Look inside
 
@@ -137,9 +189,13 @@ is safe to run while `main.py` is running.
 python -m pytest -v
 ```
 
-49 tests in about two seconds. They need **only pytest** - `core/` imports
+86 tests in about fifteen seconds. They need **only pytest** - `core/` imports
 nothing outside the standard library at module level, so no camera, no
 microphone, no model weights, and no writes outside a temporary directory.
+The perception tests (`CAP-7`) additionally need `numpy` and `opencv`, both in
+`requirements.txt`, and skip rather than fail when those are missing - so
+`pip install pytest` on its own still passes. The uplink tests talk only to a
+server one of their own fixtures starts on `127.0.0.1`.
 
 The same suite runs on every push through GitHub Actions
 (`.github/workflows/tests.yml`).
@@ -163,9 +219,12 @@ This is a long-running project, built one complete step at a time.
   long-term episodes) with a soft capacity, event segmentation by window plus
   content shock, sleep with selective transfer and real forgetting across all
   five stores, a two-process sleep rhythm with no schedule in it, sleeping-but-
-  still-sensing behaviour, persistence across restarts, test suite with CI.
-- **Next:** the capability part - an HTTP ingestion endpoint so other devices
-  can feed the same senses in (`CAP-8`).
+  still-sensing behaviour, persistence across restarts, test suite with CI, and
+  the first capability: an HTTP uplink other devices feed vision and hearing
+  through (`CAP-5`–`CAP-8`), raw bytes on the wire, perception and the gate
+  on the host.
+- **Next:** the input half of `STEP-2` - wiring what the senses perceive into
+  the learning system, which `OPEN-10` parked for exactly this step.
 
 ## License
 

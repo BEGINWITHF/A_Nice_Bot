@@ -5,5 +5,7 @@ numpy
 opencv-python
 pyaudio
 
-# Tests need pytest and nothing else:
+# Tests need pytest:
 #   python -m pip install pytest
+# The perception tests also need numpy and opencv (both above) and skip
+# when they are missing, so `pip install pytest` alone still passes.

@@ -294,69 +294,84 @@ class SeeingSystem:
         
         return self.attention_map
     
+    def see_frame(self, frame, source="camera"):
+        """
+        Turn one frame into an observation.  This is where vision happens.
+
+        CAP-7 splits capture from perception: a remote device ships the raw
+        picture to the host and the host is what perceives it - the author's
+        answer when asked how raw "raw observation" has to be (2026-09-30):
+        "画面被实时传回服务器，而服务器再让 ai 感知".  So the local camera and
+        an uplink frame land here through one code path, and `source` only
+        records which eye it came through.
+
+        IO-5 still holds for both: the frame is sampled into features and
+        dropped, so the pixels are never written down by whoever captured them.
+        """
+        # IO-5: sample the frame, turn it into features, drop the
+        # pixels. The raw image is never written to disk - a JPEG is
+        # not a memory, the analysis below is.
+        analysis = self._analyze_frame(frame)
+
+        observation = {
+            "type": source,
+            "analysis": analysis,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        self.things_seen.append(observation)
+        self.last_capture = observation
+
+        # Learn from what was seen using IT processing
+        if analysis:
+            for obj in analysis.get("it_objects", []):
+                if obj not in self.known_objects:
+                    self.known_objects[obj] = {
+                        "first_seen": datetime.now().isoformat(),
+                        "times_seen": 1,
+                        "dominant_color": analysis.get("v4_shapes", {}).get("dominant_color"),
+                        "features": {
+                            "brightness": analysis.get("v1_features", {}).get("brightness", 0),
+                            "edge_density": analysis.get("v1_features", {}).get("edge_density", 0),
+                            "shape_complexity": analysis.get("v2_contours", {}).get("shape_complexity", 0)
+                        }
+                    }
+                else:
+                    self.known_objects[obj]["times_seen"] += 1
+                    # Strengthen memory with each viewing (Hebbian learning)
+                    if "memory_strength" not in self.known_objects[obj]:
+                        self.known_objects[obj]["memory_strength"] = 0.5
+                    self.known_objects[obj]["memory_strength"] = min(1.0,
+                        self.known_objects[obj]["memory_strength"] + 0.05)
+
+        # Improve vision with use
+        self.visual_acuity = min(1.0, self.visual_acuity + 0.001)
+        self._save_state()
+
+        return observation
+
     def see_camera(self):
         """
-        Capture a frame from the camera.
+        Capture a frame from the camera, then see it.
         Like opening your eyes and seeing.
         """
         if not self.camera_available:
             return {"error": "Camera not available"}
-        
+
         try:
             import cv2
-            
+
             cap = cv2.VideoCapture(0)
             ret, frame = cap.read()
             cap.release()
-            
-            if ret:
-                # IO-5: sample the frame, turn it into features, drop the
-                # pixels. The raw image is never written to disk - a JPEG is
-                # not a memory, the analysis below is.
-                analysis = self._analyze_frame(frame)
 
-                observation = {
-                    "type": "camera",
-                    "analysis": analysis,
-                    "timestamp": datetime.now().isoformat()
-                }
-                
-                self.things_seen.append(observation)
-                self.last_capture = observation
-                
-                # Learn from what was seen using IT processing
-                if analysis:
-                    for obj in analysis.get("it_objects", []):
-                        if obj not in self.known_objects:
-                            self.known_objects[obj] = {
-                                "first_seen": datetime.now().isoformat(),
-                                "times_seen": 1,
-                                "dominant_color": analysis.get("v4_shapes", {}).get("dominant_color"),
-                                "features": {
-                                    "brightness": analysis.get("v1_features", {}).get("brightness", 0),
-                                    "edge_density": analysis.get("v1_features", {}).get("edge_density", 0),
-                                    "shape_complexity": analysis.get("v2_contours", {}).get("shape_complexity", 0)
-                                }
-                            }
-                        else:
-                            self.known_objects[obj]["times_seen"] += 1
-                            # Strengthen memory with each viewing (Hebbian learning)
-                            if "memory_strength" not in self.known_objects[obj]:
-                                self.known_objects[obj]["memory_strength"] = 0.5
-                            self.known_objects[obj]["memory_strength"] = min(1.0, 
-                                self.known_objects[obj]["memory_strength"] + 0.05)
-                
-                # Improve vision with use
-                self.visual_acuity = min(1.0, self.visual_acuity + 0.001)
-                self._save_state()
-                
-                return observation
-            else:
-                return {"error": "Failed to capture frame"}
-                
+            if ret:
+                return self.see_frame(frame, source="camera")
+            return {"error": "Failed to capture frame"}
+
         except ImportError:
             return {"error": "OpenCV not installed"}
-    
+
     def _analyze_frame(self, frame):
         """
         Analyze a camera frame using biological visual processing pipeline.

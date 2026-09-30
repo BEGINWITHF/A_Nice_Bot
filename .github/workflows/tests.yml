@@ -16,10 +16,14 @@ jobs:
           python-version: "3.11"
 
       # core/ imports nothing outside the standard library at module level,
-      # so the suite needs pytest and nothing else - no camera, no microphone,
-      # no torch. That is what makes it runnable on a bare CI runner.
+      # so pytest alone runs most of the suite - no camera, no microphone,
+      # no torch.  The perception tests (CAP-7) additionally need the two
+      # libraries the bot itself needs; they skip when those are missing,
+      # so this step installs them to make sure CI exercises them too.
+      # opencv-python-headless is the same cv2 with the GUI bindings removed,
+      # because a runner has no libGL.
       - name: Install test dependencies
-        run: python -m pip install pytest
+        run: python -m pip install pytest numpy opencv-python-headless
 
       - name: Run tests
         run: python -m pytest -v

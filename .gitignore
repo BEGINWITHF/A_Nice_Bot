@@ -13,3 +13,7 @@ __pycache__/
 # not files; pictures are not memories. data/ holds the whole mind: the
 # short term buffer, the sleep ledger and every long term store.
 data/
+
+# Uplink deployment file - it carries the shared bearer token (OPEN-7).
+# configs/uplink.example.json is the committed template.
+configs/uplink.json

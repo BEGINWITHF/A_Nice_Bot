@@ -130,6 +130,21 @@ PROMOTE_MIN_AGE_S = 86400.0    # 1 day
 
 
 # ---------------------------------------------------------------------------
+# What even counts as an observation - the filters before the gate
+# ---------------------------------------------------------------------------
+
+# A microphone reading at or below this is room tone, not a sound.
+# SOURCE: the pre-existing cut in main.py's hearing branch, lifted here so a
+#         local mic and a remote one cannot drift apart - they were about to
+#         be two separate 0.01 literals.
+# # ASSUMPTION: no measurement stands behind 0.01. It is an amplitude
+#               fraction of full scale, i.e. -40 dBFS.
+# SWAP:   a noise-floor reading from a real room; main.py and
+#         core/host_ingest.py both read this one name.
+SILENCE_FLOOR = 0.01
+
+
+# ---------------------------------------------------------------------------
 # Event segmentation - OPEN-16 (decided: G = window + content shock)
 # ---------------------------------------------------------------------------
 
