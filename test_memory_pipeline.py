@@ -22,6 +22,7 @@ from core.memory_pipeline import (
     visual_salience,
 )
 from core.parameters import accessibility
+from core import parameters as P
 from core.episodes import LongTermEpisodes
 from core.hearing import HearingSystem
 from core.seeing import SeeingSystem
@@ -186,36 +187,254 @@ def test_scalar_readings_are_not_a_situation_change(tmp_path):
 # When to sleep
 # ---------------------------------------------------------------------------
 
-def test_sleep_is_due_after_enough_events(tmp_path):
-    p = new_pipeline(tmp_path, sleep_after_events=5, sleep_after_seconds=10 ** 9)
+# ---------------------------------------------------------------------------
+# When to sleep - OPEN-12: the two-process model, not a schedule
+# ---------------------------------------------------------------------------
 
-    for i in range(4):
-        p.record("seeing", {"n": i}, salience=0.5)
-    assert p.due() is False
+def test_pressure_accumulates_slowly_and_recovers_fast(tmp_path):
+    """The asymmetry the whole idea rests on: chi_w = 18.2 h, chi_s = 4.2 h."""
+    import math
+    # one time constant: 63.2% of the way there, in both directions
+    woke = P.advance_pressure(P.H_SLEEP, P.TAU_WAKE_S, asleep=False)
+    assert woke == pytest.approx(1 - (1 - P.H_SLEEP) * math.exp(-1))
+    slept = P.advance_pressure(0.67, P.TAU_SLEEP_S, asleep=True)
+    assert slept == pytest.approx(0.67 * math.exp(-1))
+    # recovery is ~4.3x faster than accumulation -> one night restores most
+    assert P.TAU_WAKE_S / P.TAU_SLEEP_S == pytest.approx(4.3, abs=0.05)
+    # a backwards clock changes nothing (and does not blow up)
+    assert P.advance_pressure(0.5, -100, asleep=False) == 0.5
 
-    p.record("seeing", {"n": 4}, salience=0.5)
-    assert p.due() is True
+
+def test_thresholds_follow_the_circadian_rhythm(tmp_path):
+    """H+(t) = H0+ + a*C(t), H-(t) = H0- + a*C(t) - Skeldon 2025 eq. 7/8."""
+    trough = P.thresholds(P.CIRCADIAN_MIN_PHASE_S)
+    peak = P.thresholds(P.CIRCADIAN_MIN_PHASE_S + 12 * 3600)
+    assert P.circadian_signal(P.CIRCADIAN_MIN_PHASE_S) == -1.0
+    assert P.circadian_signal(P.CIRCADIAN_MIN_PHASE_S + 12 * 3600) == 1.0
+    assert trough[0] == pytest.approx(P.H_WAKE - P.CIRCADIAN_AMPLITUDE)
+    assert peak[0] == pytest.approx(P.H_WAKE + P.CIRCADIAN_AMPLITUDE)
+    # the gap never closes: that is what makes "startled awake" possible
+    assert all(up > lo for up, lo in (trough, peak))
 
 
-def test_sleep_is_due_after_being_awake_too_long(tmp_path):
-    p = new_pipeline(tmp_path, sleep_after_seconds=10, sleep_after_events=10 ** 9)
+def test_it_falls_asleep_when_pressure_passes_the_upper_threshold(tmp_path):
+    """No time-of-day schedule anywhere - only pressure against a threshold."""
+    p = new_pipeline(tmp_path)
+    now = 1000.0
+    p.asleep = False
+    p.pressure_ts = now
 
-    assert p.due(now=p.last_sleep_ts + 9) is False
-    assert p.due(now=p.last_sleep_ts + 11) is True
+    p.pressure = P.H_SLEEP            # 0.17: under every upper threshold
+    assert p.due(now) is False
+
+    p.pressure = 1.0                  # 1.0: over every upper threshold
+    assert p.due(now) is True
 
 
-def test_sleep_resets_the_rhythm_and_returns_immediately(tmp_path):
-    """PIPE-4: sleep is one pass and never blocks the other pipelines."""
-    p = new_pipeline(tmp_path, sleep_after_events=2)
-    for i in range(3):
-        p.record("seeing", {"n": i}, salience=0.5)
+def test_it_wakes_when_pressure_reaches_the_lower_threshold(tmp_path):
+    p = new_pipeline(tmp_path)
+    now = 1000.0
+    p.asleep = True
+    p.pressure_ts = now
+    p.last_sleep_ts = now             # no sleep cycle has elapsed yet
+
+    p.pressure = 1.0                  # still far above every lower threshold
+    assert p.due(now) is False
+
+    p.pressure = 0.0                  # under every lower threshold
+    assert p.due(now) is True
+
+
+def test_a_sleep_period_sorts_once_per_cycle(tmp_path):
+    """OPEN-18a: the author chose one pass per 90-minute sleep cycle."""
+    p = new_pipeline(tmp_path, sleep_cycle=90 * 60)
+    now = 1000.0
+    p.asleep = True
+    p.pressure = 0.5
+    p.pressure_ts = now
+    p.last_sleep_ts = now
+
+    assert p.due(now + 89 * 60) is False    # not yet a full cycle
+    assert p.due(now + 91 * 60) is True     # next cycle is due
+
+
+def test_sleep_pass_reports_which_transition_it_took(tmp_path):
+    """Onset, then a mid-sleep cycle, then waking - three passes, one night."""
+    p = new_pipeline(tmp_path, sleep_cycle=90 * 60)
+    now = 1000.0
+    p.asleep = False
+    p.pressure = 1.0
+    p.pressure_ts = now
+
+    onset = p.sleep(now=now, reason="scheduled")
+    assert onset["transition"] == "fell_asleep"
+    assert onset["state"] == "asleep"
+    assert p.asleep is True
+
+    mid = p.sleep(now=now + 91 * 60, reason="scheduled")
+    assert mid["transition"] == "cycle"
+    assert p.asleep is True              # a cycle pass is still asleep
+
+    p.pressure = 0.0                     # pressure spent itself overnight
+    wake = p.sleep(now=now + 180 * 60, reason="scheduled")
+    assert wake["transition"] == "woke"
+    assert wake["state"] == "awake"
+    assert p.asleep is False
+
+
+def _simulate_rhythm(days=14, dt=60.0, start_pressure=None, asleep=False, t0=0.0):
+    """Integrate Process S against Process C for `days`, returning the
+    steady-state transitions.  Uses only the shipped constants."""
+    pressure = P.H_SLEEP if start_pressure is None else start_pressure
+    asleep, t = asleep, t0
+    switches, awake_s, sleep_s = [], 0.0, 0.0
+    for _ in range(int(days * 24 * 3600 / dt)):
+        t += dt
+        upper, lower = P.thresholds(t)
+        pressure = P.advance_pressure(pressure, dt, asleep)
+        if not asleep and pressure >= upper:
+            asleep = True
+            switches.append(("SLEEP", t))
+        elif asleep and pressure <= lower:
+            asleep = False
+            switches.append(("WAKE", t))
+        if asleep:
+            sleep_s += dt
+        else:
+            awake_s += dt
+    steady = [s for s in switches if s[1] > 3 * 24 * 3600]   # drop the first days
+    onsets = [t2 for kind, t2 in steady if kind == "SLEEP"]
+    offsets = [t2 for kind, t2 in steady if kind == "WAKE"]
+    pairs = []
+    for i in range(len(steady) - 1):
+        kind, t1 = steady[i]
+        nxt, t2 = steady[i + 1]
+        if (kind, nxt) == ("SLEEP", "WAKE"):
+            pairs.append(("sleep", (t2 - t1) / 3600))
+        elif (kind, nxt) == ("WAKE", "SLEEP"):
+            pairs.append(("wake", (t2 - t1) / 3600))
+    mean = {k: sum(d for kk, d in pairs if kk == k) /
+             max(1, sum(1 for kk, _ in pairs if kk == k)) for k in ("sleep", "wake")}
+    return onsets, offsets, mean
+
+
+def test_the_rhythm_entrains_to_one_24_hour_day(tmp_path):
+    """
+    OPEN-12's payoff: 16 h awake / 8 h asleep, one cycle a day.
+
+    Nothing in this test sets a schedule - it integrates Process S against
+    Process C using only the shipped constants.  parameter-values section 2
+    predicts T_wake = 16.8 h and T_sleep = 5.8 h from the free-running model;
+    with a = 0.12 the circadian forcing entrains that 22.6 h oscillator to
+    exactly 24 h (Skeldon 2025, "Entrainment of the sleep-wake oscillator").
+    If a swap of TAU_*/H_*/CIRCADIAN_* breaks the day, this says so.
+    """
+    onsets, offsets, mean = _simulate_rhythm()
+
+    assert len(onsets) == len(offsets)
+    assert 9 <= len(onsets) <= 13              # monophasic: one a day
+
+    assert mean["sleep"] == pytest.approx(7.9, abs=0.6)
+    assert mean["wake"] == pytest.approx(16.1, abs=0.6)
+    assert mean["sleep"] + mean["wake"] == pytest.approx(24.0, abs=0.2)
+    # phase-locked, not drifting: every night starts within the same 10 min
+    # (compared modulo one day, since they are 24 h apart by construction)
+    onset_clock = [t2 % 86400 for t2 in onsets]
+    offset_clock = [t2 % 86400 for t2 in offsets]
+    assert max(onset_clock) - min(onset_clock) < 600.0
+    assert max(offset_clock) - min(offset_clock) < 600.0
+    # documented consequence of CIRCADIAN_MIN_PHASE = 06:00: it sleeps
+    # 01:27-09:24.  The numbers are not asserted, the *stability* above is -
+    # changing the chronotype moves them, it does not break the rhythm.
+
+
+def test_the_chronotype_is_the_only_thing_that_moves_the_schedule(tmp_path,
+                                                                   monkeypatch):
+    """CIRCADIAN_MIN_PHASE_S is the swap point (OPEN-13): moving the trough
+    3 h earlier moves the whole day 3 h earlier, unchanged in length."""
+    onsets1, offsets1, mean1 = _simulate_rhythm()
+    monkeypatch.setattr(P, "CIRCADIAN_MIN_PHASE_S", 3 * 3600)
+    onsets2, offsets2, mean2 = _simulate_rhythm()
+
+    shift = (onsets2[0] - onsets1[0]) % 86400
+    assert shift == pytest.approx(86400 - 3 * 3600, abs=600)   # 3 h earlier
+    shift_off = (offsets2[0] - offsets1[0]) % 86400
+    assert shift_off == pytest.approx(86400 - 3 * 3600, abs=600)
+    # the length of the day is a property of TAU_*/H_*, not of the chronotype
+    assert mean2["sleep"] == pytest.approx(mean1["sleep"], abs=0.2)
+    assert mean2["wake"] == pytest.approx(mean1["wake"], abs=0.2)
+
+
+def test_a_sleep_pass_is_one_pass_and_never_blocks(tmp_path):
+    """PIPE-4: sleep() runs once and returns; the senses keep running."""
+    p = new_pipeline(tmp_path)
+    p.record("seeing", {"n": 0}, salience=0.5, now=1000.0)
 
     report = p.sleep(now=1000.0, reason="test")
 
     assert p.events_since_sleep == 0
     assert p.last_sleep_ts == 1000.0
-    assert p.due(now=1000.0) is False
     assert report["reason"] == "test"
+    assert p.due(now=1000.0) is False
+
+
+# ---------------------------------------------------------------------------
+# OPEN-18b: asleep, the senses still run but the world is not memorised
+# ---------------------------------------------------------------------------
+
+def test_while_asleep_routine_observations_are_not_memorised(tmp_path):
+    """PIPE-4 keeps the senses on; OPEN-18b keeps the memories off
+    ("常规事情感知不到")."""
+    p = new_pipeline(tmp_path)
+    p.asleep = True
+    p.pressure = 0.5
+    p.pressure_ts = 21600.0
+
+    assert p.record("hearing", {"volume_band": 3},
+                    salience=0.4, now=21610.0) is None
+    assert p.record("seeing", {"objects": ["cup"]},
+                    salience=0.7, now=21611.0) is None   # passes the gate, not this one
+
+    assert p.total_recorded == 0
+    assert p.total_dropped_asleep == 2
+    assert p.asleep is True            # ordinary noise does not wake it
+
+
+def test_a_severe_observation_startles_the_bot_awake(tmp_path):
+    """OPEN-18b: "受到剧烈情况惊醒" - and it is remembered, because it is
+    the reason the bot is awake."""
+    # 06:00 is the circadian trough: the upper threshold sits at its lowest
+    # (0.55), so a pressure of 0.6 would send it straight back to sleep.
+    p = new_pipeline(tmp_path, arousal_s=3600.0)
+    p.asleep = True
+    p.pressure = 0.6
+    p.pressure_ts = 21600.0
+    p.last_sleep_ts = 21500.0
+
+    entry = p.record("seeing", {"objects": ["intruder"]},
+                     salience=0.95, now=21600.0)
+
+    assert entry is not None
+    assert p.asleep is False
+    assert p.startle_count == 1
+    assert p.aroused_until == 21600.0 + 3600.0
+
+    # Skeldon's "wake effort": pressure still says sleep, the arousal holds it
+    assert p.due(21630.0) is False
+    # ...and once that expires the model decides again
+    assert p.due(21600.0 + 3601.0) is True
+
+
+def test_startle_wake_effort_can_expire(tmp_path):
+    p = new_pipeline(tmp_path, arousal_s=0.0)
+    p.asleep = True
+    p.pressure = 1.0
+    p.pressure_ts = 21600.0
+
+    p.record("seeing", {"objects": ["fire"]}, salience=0.95, now=21600.0)
+    assert p.asleep is False
+    # no wake effort -> the two-process model puts it back to sleep at once
+    assert p.due(21601.0) is True
 
 
 # ---------------------------------------------------------------------------

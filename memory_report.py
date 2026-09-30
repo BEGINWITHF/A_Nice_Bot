@@ -103,14 +103,51 @@ def show_pipeline():
 
     show_episodes()
 
+    show_rhythm(state)
+
     head("COUNTERS")
     print(f"memorised {state.get('total_recorded', 0)}   "
           f"rejected {state.get('total_dropped', 0)}   "
-          f"{state.get('events_since_sleep', 0)} events since last sleep   "
+          f"ignored while asleep {state.get('total_dropped_asleep', 0)}   "
+          f"{state.get('events_since_sleep', 0)} events since last pass   "
           f"gate: salience >= {DEFAULT_POLICY['min_salience']}")
-    print(f"sleep after {DEFAULT_POLICY['sleep_after_seconds']}s awake "
-          f"or {DEFAULT_POLICY['sleep_after_events']} events "
-          f"(placeholder rhythm - OPEN-12 pending)")
+    print(f"startled awake {state.get('startle_count', 0)} times "
+          f"(salience >= {DEFAULT_POLICY['startle_salience']}, "
+          f"then {DEFAULT_POLICY['arousal_s'] // 60} min alert)")
+
+
+def show_rhythm(state):
+    """OPEN-12: where the two processes are right now - computed, never stored.
+
+    Nothing in this block is a schedule: the state is whatever Process S is
+    doing against a circadian-modulated pair of thresholds.
+    """
+    head("RHYTHM   (two-process model, OPEN-12)")
+    now = time.time()
+    asleep = state.get("asleep", False)
+    pressure = float(state.get("pressure", P.H_SLEEP))
+    upper, lower = P.thresholds(now)
+    since = state.get("state_since", now)
+
+    print(f"  {'ASLEEP ' if asleep else 'AWAKE  '}"
+          f"{age_of(since)}   pressure {pressure:.3f}")
+    if asleep:
+        verdict = ("waking is due" if pressure <= lower
+                   else "sleeping it off - senses still on, nothing memorised")
+    elif pressure >= upper:
+        verdict = "at or above the upper threshold -> sleep is due"
+    elif pressure <= lower:
+        verdict = "wide awake - pressure fully spent, nothing can wake it"
+    else:
+        verdict = ("between the thresholds -> both states are possible "
+                   "(this is where a startle can hold)")
+    print(f"  thresholds now: sleep >= {upper:.3f}, wake <= {lower:.3f}")
+    print(f"  {verdict}")
+    print(f"  circadian {P.circadian_signal(now):+.3f} "
+          f"(+1 at 18:00, -1 at the "
+          f"{time.strftime('%H:%M', time.gmtime(P.CIRCADIAN_MIN_PHASE_S))} "
+          f"trough)   sort every "
+          f"{DEFAULT_POLICY['sleep_cycle'] // 60} min while asleep")
 
 
 def show_episodes():
@@ -250,7 +287,9 @@ def show_ledger():
         return
     for report in reports[-8:]:
         print(f"  {report.get('started', '?')[:19].replace('T', ' ')}  "
-              f"{report.get('reason', '?'):<10} "
+              f"{report.get('reason', '?'):<9} "
+              f"{report.get('state', '?'):<7} "
+              f"{(report.get('transition') or '-'):<11} "
               f"awake {report.get('awake_seconds', 0):>6.1f}s  "
               f"events {report.get('events_processed', 0):>3}  "
               f"focus {report.get('focus_in', 0):>2}  "

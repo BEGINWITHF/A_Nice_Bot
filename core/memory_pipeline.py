@@ -24,9 +24,22 @@ Three layers (decided in OPEN-15, author's answer "就这样做了"):
   episodes        long term, core/episodes.py - reached only during sleep and
                   only selectively (OPEN-17).
 
+The rhythm (OPEN-12): there is no schedule anywhere.  Process S (sleep
+pressure) rises with tau_w = 18.2 h while awake and falls with tau_s = 4.2 h
+while asleep; it crosses a pair of thresholds that Process C (circadian,
+24 h, amplitude 0.12) moves up and down.  Crossing upward is falling asleep,
+crossing downward is waking - and the two together settle into exactly one
+16 h awake / 8 h asleep day (verified against the shipped constants in the
+test suite, not asserted by hand).
+
+While asleep the senses keep running (PIPE-4) but routine observations are
+not memorised; a severe one startles the bot awake instead (OPEN-18).
+
 Two invariants kept from the original:
   1. The sensing/behaviour loops are never blocked by sleep. sleep() runs a
-     single pass and returns immediately - a sleeping person still hears.
+     single pass and returns immediately - a sleeping person still reacts.
+     One sleep period runs several of them: at onset, once per 90-minute
+     sleep cycle, and at waking (OPEN-18a).
   2. Forgetting really deletes. Below the threshold the entry is removed,
      instead of being multiplied by 0.9 forever.
 
@@ -54,9 +67,12 @@ DEFAULT_POLICY = {
     "conscious_capacity": P.CONSCIOUS_CAPACITY,   # focus size (Cowan, OPEN-14)
     "recent_capacity": P.RECENT_CAPACITY,         # soft, # ASSUMPTION (65)
 
-    # --- when to sleep (still the placeholder rhythm; OPEN-12 pending) ---
-    "sleep_after_seconds": P.SLEEP_AFTER_SECONDS,
-    "sleep_after_events": P.SLEEP_AFTER_EVENTS,
+    # --- when to sleep: OPEN-12 two-process model, no schedule anywhere ---
+    # (the old sleep_after_seconds = 900 / sleep_after_events = 200 are gone:
+    #  neither has a human counterpart - parameter-values section 2)
+    "sleep_cycle": P.SLEEP_CYCLE_S,       # one sort per sleep cycle (OPEN-18a)
+    "startle_salience": P.STARTLE_SALIENCE,  # wakes it: OPEN-18b
+    "arousal_s": P.AROUSAL_S,             # how long it stays alertly awake
 
     # --- what sleep does ---
     "replay_salience": P.REPLAY_SALIENCE,   # salient enough to be replayed
@@ -202,11 +218,20 @@ class MemoryPipeline:
         self.segments = {}        # kind -> {seq, started, situation, shock_slot}
         self.segment_seq = 0      # monotonic, so keys stay unique across restarts
 
-        # Rhythm state
-        self.last_sleep_ts = time.time()
+        # Rhythm state - OPEN-12 two-process model.  Nothing here is a
+        # schedule: `asleep` flips when Process S crosses a circadian-modulated
+        # threshold, and `pressure` is integrated with the exact exponential.
+        self.last_sleep_ts = time.time()   # last consolidation pass
+        self.state_since = self.last_sleep_ts   # when the current state began
+        self.asleep = False
+        self.pressure = P.H_SLEEP          # start as if just woken
+        self.pressure_ts = time.time()
+        self.aroused_until = 0.0           # OPEN-18b: wake effort after a startle
         self.events_since_sleep = 0
         self.total_recorded = 0
         self.total_dropped = 0
+        self.total_dropped_asleep = 0      # OPEN-18b: sensed but not memorised
+        self.startle_count = 0             # OPEN-18b: severe events that woke it
 
         # Registered long term subsystems: name -> {"consolidate", "forget"}
         # (OPEN-17: no `promote` hook any more - the pipeline owns `episodes`.)
@@ -242,6 +267,15 @@ class MemoryPipeline:
         """
         now = time.time() if now is None else now
         salience = max(0.0, min(1.0, float(salience)))
+
+        # OPEN-18b: while asleep the senses keep running (PIPE-4) but routine
+        # observations are not memorised - "常规事情感知不到".  A severe one
+        # startles the bot awake instead of being quietly noted down.
+        if self.asleep:
+            if salience < self.policy["startle_salience"]:
+                self.total_dropped_asleep += 1
+                return None
+            self._startle(now)
 
         # Gate 1: unimportant things are not memorized
         if salience < self.policy["min_salience"]:
@@ -349,27 +383,81 @@ class MemoryPipeline:
         self.consciousness.append(entry)
 
     # ------------------------------------------------------------------
-    # When to sleep
+    # When to sleep - OPEN-12: two-process model, not a schedule
     # ------------------------------------------------------------------
-    def due(self, now=None):
-        """Awake time or event budget reached -> one sleep pass is due."""
+    def _advance(self, now):
+        """Integrate Process S up to `now` - exact exponential, never Euler.
+
+        A clock that moved backwards (`dt <= 0`) is re-anchored without
+        touching the pressure; there is nothing to integrate into the past.
+        """
+        self.pressure = P.advance_pressure(
+            self.pressure, now - self.pressure_ts, self.asleep)
+        self.pressure_ts = now
+
+    def _startle(self, now):
+        """OPEN-18b: a severe observation wakes the bot ("剧烈情况惊醒").
+
+        Skeldon 2025 names what keeps you awake in exactly this situation
+        **wake effort**: the pressure is still above the lower threshold, so
+        without `aroused_until` the very next check would decide "sleep" and
+        put the bot straight back down.
+        """
+        if not self.asleep:
+            return
+        self._advance(now)      # the decay up to here belongs to that sleep
+        self.asleep = False
+        self.state_since = now
+        self.aroused_until = now + float(self.policy["arousal_s"])
+        self.startle_count += 1
+
+    def transition(self, now=None):
+        """
+        The state change due right now, or None.
+
+        Returns "fell_asleep", "woke", "cycle" (a mid-sleep pass, OPEN-18a)
+        or None.  It only moves the state machine - consolidation belongs to
+        sleep(), which is the one that calls this.
+        """
         now = time.time() if now is None else now
-        awake = now - self.last_sleep_ts
-        return (
-            awake >= self.policy["sleep_after_seconds"]
-            or self.events_since_sleep >= self.policy["sleep_after_events"]
-        )
+        self._advance(now)
+        upper, lower = P.thresholds(now)
+
+        if self.asleep:
+            if self.pressure <= lower:                     # sleep -> wake
+                return "woke"
+            if now - self.last_sleep_ts >= float(self.policy["sleep_cycle"]):
+                return "cycle"                             # next sleep cycle
+            return None
+
+        # awake -> sleep, suppressed while the wake effort of a startle holds
+        if now >= self.aroused_until and self.pressure >= upper:
+            return "fell_asleep"
+        return None
+
+    def due(self, now=None):
+        """True when one consolidation pass should run right now."""
+        return self.transition(now) is not None
+
+    def state(self, now=None):
+        """'asleep' or 'awake', advancing the rhythm first."""
+        now = time.time() if now is None else now
+        self._advance(now)
+        return "asleep" if self.asleep else "awake"
 
     def awake_seconds(self, now=None):
+        """How long it has been in the *current* state, not since the pass."""
         now = time.time() if now is None else now
-        return max(0.0, now - self.last_sleep_ts)
+        return max(0.0, now - self.state_since)
 
     def sleep(self, now=None, reason="scheduled"):
         """
         Run one sleep pass.
 
         Key constraint: this is a **single non-blocking pass**. The spine and
-        the senses keep running throughout - a sleeping person still reacts.
+        the senses keep running throughout - a sleeping person still reacts
+        (PIPE-4).  One sleep period runs several of these: at onset, once per
+        90-minute sleep cycle, and at waking (OPEN-18a).
 
         Phases (OPEN-15):
           1. flush the focus into `recent` - the focus is offline while asleep
@@ -383,10 +471,25 @@ class MemoryPipeline:
         now = time.time() if now is None else now
         p = self.policy
 
+        # --- phase 0: the rhythm decides what just happened ----------------
+        transition = self.transition(now)
+        if transition == "fell_asleep":
+            self.asleep = True
+            self.state_since = now
+            self.aroused_until = 0.0
+        elif transition == "woke":
+            self.asleep = False
+            self.state_since = now
+            self.aroused_until = 0.0
+
         report = {
             "reason": reason,
             "started": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
             "awake_seconds": round(now - self.last_sleep_ts, 1),
+            "state_seconds": round(now - self.state_since, 1),
+            "state": "asleep" if self.asleep else "awake",
+            "transition": transition,
+            "pressure": round(self.pressure, 3),
             "events_processed": self.events_since_sleep,
             "focus_in": len(self.consciousness),
             "recent_in": len(self.recent),
@@ -476,6 +579,9 @@ class MemoryPipeline:
     # Observability
     # ------------------------------------------------------------------
     def stats(self):
+        now = time.time()
+        self._advance(now)
+        upper, lower = P.thresholds(now)
         return {
             "consciousness": len(self.consciousness),
             "conscious_capacity": self.policy["conscious_capacity"],
@@ -483,9 +589,14 @@ class MemoryPipeline:
             "recent_capacity": self.policy["recent_capacity"],
             "episodes": self.episodes.count(),
             "events_since_sleep": self.events_since_sleep,
-            "awake_seconds": round(self.awake_seconds(), 1),
+            "awake_seconds": round(self.awake_seconds(now), 1),
+            "state": "asleep" if self.asleep else "awake",
+            "pressure": round(self.pressure, 3),
+            "thresholds": [round(upper, 3), round(lower, 3)],
             "total_recorded": self.total_recorded,
             "total_dropped": self.total_dropped,
+            "total_dropped_asleep": self.total_dropped_asleep,
+            "startle_count": self.startle_count,
             "sleep_count": len(self.sleep_reports),
             "registered_stores": sorted(self.stores),
             "last_sleep": self.sleep_reports[-1]["started"] if self.sleep_reports else None,
@@ -511,12 +622,21 @@ class MemoryPipeline:
             self.last_sleep_ts = state.get("last_sleep_ts", self.last_sleep_ts)
             self.total_recorded = state.get("total_recorded", 0)
             self.total_dropped = state.get("total_dropped", 0)
+            self.total_dropped_asleep = state.get("total_dropped_asleep", 0)
+            self.startle_count = state.get("startle_count", 0)
             self.events_since_sleep = state.get("events_since_sleep", 0)
             self.sleep_reports = state.get("sleep_reports", [])
             self.consciousness = state.get("consciousness", [])
             self.recent = state.get("recent", [])
             self.segments = state.get("segments", {})
             self.segment_seq = state.get("segment_seq", 0)
+            # OPEN-12: the rhythm itself survives a restart - a sleeping bot
+            # that is switched off is still asleep when it comes back.
+            self.asleep = state.get("asleep", self.asleep)
+            self.pressure = float(state.get("pressure", self.pressure))
+            self.pressure_ts = state.get("pressure_ts", self.pressure_ts)
+            self.aroused_until = state.get("aroused_until", 0.0)
+            self.state_since = state.get("state_since", self.last_sleep_ts)
 
             # Older ledgers called the layer below the focus `short_term`.
             legacy = state.get("short_term")
@@ -546,6 +666,23 @@ class MemoryPipeline:
                 if P.accessibility(max(0.0, now - e["when_last_rehearsed"]),
                                    load) >= floor
             ]
+
+            # Catch the rhythm up after the downtime: pressure kept moving
+            # while the machine was off.  H- is always below H+, so the two
+            # conditions can never both hold - this settles in one flip.
+            for _ in range(4):
+                self._advance(now)
+                upper, lower = P.thresholds(now)
+                if self.asleep and self.pressure <= lower:
+                    self.asleep = False
+                    self.state_since = now
+                    continue
+                if (not self.asleep and now >= self.aroused_until
+                        and self.pressure >= upper):
+                    self.asleep = True
+                    self.state_since = now
+                    continue
+                break
         except Exception:
             pass
 
@@ -553,8 +690,15 @@ class MemoryPipeline:
         path = self._state_path()
         state = {
             "last_sleep_ts": self.last_sleep_ts,
+            "state_since": self.state_since,
+            "asleep": self.asleep,
+            "pressure": self.pressure,
+            "pressure_ts": self.pressure_ts,
+            "aroused_until": self.aroused_until,
             "total_recorded": self.total_recorded,
             "total_dropped": self.total_dropped,
+            "total_dropped_asleep": self.total_dropped_asleep,
+            "startle_count": self.startle_count,
             "events_since_sleep": self.events_since_sleep,
             "consciousness": self.consciousness,
             "recent": self.recent,

@@ -176,11 +176,15 @@ def main():
                         salience=audio_salience(volume),
                     )
             
-            # 3. SLEEP WHEN DUE - one pass, never blocks the sensing loop
+            # 3. SLEEP WHEN DUE - one pass, never blocks the sensing loop.
+            # OPEN-12: `due()` is Process S crossing a circadian-modulated
+            # threshold, or a 90-minute sleep cycle while already asleep.
             if pipeline.due():
                 report = pipeline.sleep(reason="scheduled")
                 print()
-                print(f"  slept: replayed={report['replayed']} "
+                print(f"  {report['state']}: {report['transition']} "
+                      f"pressure={report['pressure']} "
+                      f"replayed={report['replayed']} "
                       f"dropped={report['dropped_below_threshold']} "
                       f"recent={report['recent_out']} "
                       f"episodes={report['episodes']}")
@@ -191,7 +195,9 @@ def main():
             # Print minimal status (no internal thoughts)
             if cycle % 20 == 0:  # Every 10 seconds
                 stats = senses.get_overall_state()
-                sys.stdout.write(f"\rAwareness: {stats['awareness_level']:.2f} | ")
+                state = pipeline.state()      # advances Process S as a side effect
+                sys.stdout.write(f"\r{state}: p={pipeline.pressure:.2f} | ")
+                sys.stdout.write(f"Awareness: {stats['awareness_level']:.2f} | ")
                 sys.stdout.write(f"Load: {stats['sensory_load']:.2f} | ")
                 sys.stdout.write(f"Cycle: {cycle}")
                 sys.stdout.flush()

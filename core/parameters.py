@@ -162,13 +162,116 @@ SHOCK_THRESHOLD = 0.6
 
 
 # ---------------------------------------------------------------------------
-# Rhythm (still the placeholder from before OPEN-12; see design-map)
+# Sleep rhythm - OPEN-12: the two-process model replaces the old placeholder
 # ---------------------------------------------------------------------------
-# # ASSUMPTION: kept as-is until OPEN-12 (two-process sleep) is implemented;
-#              OPEN-12 already decided to replace these with tau_w/tau_s and
-#              the circadian thresholds.
-SLEEP_AFTER_SECONDS = 900
-SLEEP_AFTER_EVENTS = 200
+#
+# SOURCE: Skeldon & Dijk (2025), "The two-process model of sleep regulation:
+#         a mathematical perspective", npj Biol Timing Sleep 2:24 - eq. 7/8
+#         and Fig. 1b; the model itself is Borbély (1982) / Daan et al. (1984).
+#         local copy: papers/2025-Skeldon-Dijk-...txt
+# SWAP:   TAU_*/H_*/CIRCADIAN_* are read only by the three functions at the
+#         bottom of this section and by MemoryPipeline.due() - change them
+#         there and nothing else in the system knows.
+#
+# Why these numbers and not a schedule: OPEN-13 forbids a hardcoded routine.
+# "Sleep at 23:00, wake at 07:00" has no human mechanism behind it; sleep
+# pressure crossing a circadian-modulated threshold does (OPEN-12).
+TAU_WAKE_S = 18.2 * 3600     # chi_w: pressure rise during wake   (SOURCE T5/Fig1b)
+TAU_SLEEP_S = 4.2 * 3600      # chi_s: pressure decay during sleep (SOURCE Fig1b)
+                              # recovery is 4.3x faster than accumulation -
+                              # that is why one night restores most of it
+S_MAX = 1.0                   # mu: upper asymptote, nondimensionalised (Fig1b)
+H_WAKE = 0.67                 # H0+: upper threshold, wake -> sleep (SOURCE Fig1b)
+H_SLEEP = 0.17                # H0-: lower threshold, sleep -> wake (SOURCE Fig1b)
+CIRCADIAN_AMPLITUDE = 0.12    # a     (SOURCE Fig1b)
+
+# SOURCE: Czeisler et al. (1999), Science 284:2177 - 24 subjects, PCV 0.58%,
+#         intrinsic period 24.18 +/- 0.04 h in both young and old.
+# The model RUNS at 24.00 h because the light-dark cycle entrains it (Skeldon
+# 2025 states T_c is entrained to 24 h); 24.18 h is kept as documentation of
+# the free-running tendency, so a future model of drift has the value ready.
+CIRCADIAN_PERIOD_S = 24.0 * 3600
+CIRCADIAN_FREE_RUN_S = 24.18 * 3600
+# SOURCE: Skeldon 2025 quoting young-adult alertness minimum.
+# SWAP:   set this to your own chronotype - it is the ONLY thing that moves
+#         the whole schedule on the clock.  With 06:00 the bot sleeps
+#         01:27-09:24; with 03:00 it sleeps 22:27-06:24 (measured).
+CIRCADIAN_MIN_PHASE_S = 6 * 3600
+
+
+def circadian_signal(epoch_s):
+    """
+    C(t) in [-1, +1]: Skeldon eq. 7/8 use H(t) = H0 + a*C(t) with C(t) = cos(wt).
+
+    +1 at the circadian maximum (MIN_PHASE + 12 h = 18:00), -1 at the
+    circadian minimum (06:00).  C is the circadian drive for wakefulness, so
+    both thresholds are highest when the bot is most alert and lowest in the
+    biological night.
+    """
+    period = CIRCADIAN_PERIOD_S
+    phase = (epoch_s - CIRCADIAN_MIN_PHASE_S) % period
+    return math.cos(2.0 * math.pi * (phase - period / 2.0) / period)
+
+
+def thresholds(epoch_s):
+    """(upper H+, lower H-) at this instant.  H+ > H- always: the gap between
+    them is the bistable region in which both sleep and wake can exist
+    (Skeldon 2025, Fig. 3) - which is what makes 'startled awake' possible."""
+    c = circadian_signal(epoch_s)
+    return (H_WAKE + CIRCADIAN_AMPLITUDE * c,
+            H_SLEEP + CIRCADIAN_AMPLITUDE * c)
+
+
+def advance_pressure(pressure, dt, asleep):
+    """
+    One exact step of Process S (not Euler - the exponential is closed form).
+
+        asleep: dP/dt = -P/tau_s      ->  P * exp(-dt/tau_s)
+        awake : dP/dt = (mu - P)/tau_w -> mu + (P - mu) * exp(-dt/tau_w)
+
+    dt <= 0 (clock moved backwards) leaves the pressure alone.
+    """
+    if dt <= 0:
+        return pressure
+    if asleep:
+        value = pressure * math.exp(-dt / TAU_SLEEP_S)
+    else:
+        value = S_MAX - (S_MAX - pressure) * math.exp(-dt / TAU_WAKE_S)
+    return max(0.0, min(1.0, value))
+
+
+# ---------------------------------------------------------------------------
+# Sleep period behaviour - OPEN-18 (author's answers 2026-09-30)
+# ---------------------------------------------------------------------------
+# OPEN-18a: how often sleep runs a consolidation pass.  The author chose
+# "every 90 minutes", i.e. one pass per sleep cycle rather than one per night.
+# # ASSUMPTION: 90 min is the human NREM/REM cycle length; §二 of
+#               parameter-values-with-sources.md lists no such constant
+#               because OPEN-12 only ever specified *when* sleep starts and
+#               ends, not how often it sorts during it.
+# SWAP:       raise it for fewer, bigger passes; 0 disables mid-sleep passes
+#             and leaves only the two boundaries (onset and waking).
+SLEEP_CYCLE_S = 90 * 60
+
+# OPEN-18b: while asleep the senses keep running (PIPE-4) but routine
+# observations are NOT memorised - "常规事情感知不到".  A severe one startles
+# the bot awake instead - "受到剧烈情况惊醒".
+# # ASSUMPTION: no literature gives a startle threshold; 0.8 sits above the
+#               0.6 that sleep spends replays on, so "worth a replay" and
+#               "loud enough to wake me" are different questions.
+# SWAP:       any salience quantile; record() reads it once per observation.
+STARTLE_SALIENCE = 0.8
+
+# # ASSUMPTION: how long it stays alertly awake after being startled awake.
+#               Without this the two-process model would put it straight back
+#               to sleep: a startled bot has pressure still above H-, and
+#               while that holds, H+ says "sleep".  Skeldon 2025 calls the
+#               mechanism that keeps you awake in exactly that situation
+#               "wake effort" - the upper threshold is moved so wake can be
+#               maintained.  One hour is our stand-in for that shift.
+# SWAP:       set it to 0 and the bot falls back asleep as soon as the model
+#             says so; raise it for a longer alert watch.
+AROUSAL_S = 60 * 60
 
 # How many sleep reports the ledger keeps.
 MAX_SLEEP_REPORTS = 20

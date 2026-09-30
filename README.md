@@ -98,16 +98,31 @@ EPISODES   (long term: what sleep decided to keep)
 --------------------------------------------------
   acc 1.00  first 2d ago  last 2d ago  seeing   {"objects": ["red1_object"]}
 
+RHYTHM   (two-process model, OPEN-12)
+-------------------------------------
+  AWAKE  4h ago   pressure 0.170
+  thresholds now: sleep >= 0.693, wake <= 0.193
+  wide awake - pressure fully spent, nothing can wake it
+  circadian +0.195 (+1 at 18:00, -1 at the 06:00 trough)   sort every 90 min while asleep
+
 SEEING   (long term: what it has ever seen)
   red1_object              seen   30x  strength 1.00  since 2026-09-29 01:51
 
-SLEEP LEDGER   (3 sleeps, newest last)
-  2026-09-29 02:16:19  shutdown   awake   24.2s  events  7  recent 2->1 ...
+SLEEP LEDGER   (3 passes, newest last)
+  2026-09-30 01:27:04  scheduled asleep  fell_asleep  awake  ... recent 7->6 ...
 ```
 
 `acc` is availability recomputed from the last-rehearsal clock every time you
 ask - no strength field is stored anywhere, because a stored parameter is not
 part of a memory.
+
+**There is no sleep schedule.** `RHYTHM` shows sleep pressure against a pair
+of thresholds that the circadian signal moves up and down; crossing upward is
+falling asleep, crossing downward is waking. The shipped constants settle into
+one 16 h awake / 8 h asleep day (7.9 / 16.1 measured, exactly 24 h, phase
+locked) - a test integrates them for two weeks to prove it. While asleep the
+senses still run but ordinary observations are not memorised; a severe one
+startles the bot awake.
 
 It only reads state files: no camera, no microphone, nothing is written, and it
 is safe to run while `main.py` is running.
@@ -118,7 +133,7 @@ is safe to run while `main.py` is running.
 python -m pytest -v
 ```
 
-40 tests in about three seconds. They need **only pytest** - `core/` imports
+49 tests in about two seconds. They need **only pytest** - `core/` imports
 nothing outside the standard library at module level, so no camera, no
 microphone, no model weights, and no writes outside a temporary directory.
 
@@ -143,9 +158,10 @@ This is a long-running project, built one complete step at a time.
 - **Done:** sensory loop, salience gate, three-layer memory (focus / recent /
   long-term episodes) with a soft capacity, event segmentation by window plus
   content shock, sleep with selective transfer and real forgetting across all
-  five stores, persistence across restarts, test suite with CI.
-- **Next:** `OPEN-12` two-process sleep rhythm, then the capability part - an
-  HTTP ingestion endpoint so other devices can feed the same senses in.
+  five stores, a two-process sleep rhythm with no schedule in it, sleeping-but-
+  still-sensing behaviour, persistence across restarts, test suite with CI.
+- **Next:** the capability part - an HTTP ingestion endpoint so other devices
+  can feed the same senses in (`CAP-8`).
 
 ## License
 
