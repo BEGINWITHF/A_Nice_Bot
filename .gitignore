@@ -17,3 +17,8 @@ data/
 # Uplink deployment file - it carries the shared bearer token (OPEN-7).
 # configs/uplink.example.json is the committed template.
 configs/uplink.json
+
+# Vision weights (OPEN-10).  3.8MB of Apache-2.0 ONNX, fetched on demand from
+# core/vision_model.py and checked against a pinned hash - the repository
+# stores where it comes from, not the bytes.
+models/

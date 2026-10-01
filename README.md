@@ -17,12 +17,14 @@ state is never committed to this repository — pictures are not memories.
 | `clean_memories.py` | Wipe all state and start from a blank mind |
 | `device.py` | A **dumb sense organ**: ships raw frames and raw audio at the host (`CAP-7`) |
 | `uplink_config.py` | Loads the deployment file: host address + shared token (`CAP-8`, `OPEN-7`) |
+| `fetch_vision_model.py` | Brings in the vision weights early, if you would rather (`OPEN-10`) |
 | `core/memory_pipeline.py` | The gate: when to memorise, when to forget, when to sleep |
 | `core/uplink.py` | HTTP/REST uplink server, standard library only (`CAP-5`, `CAP-6`) |
 | `core/host_ingest.py` | Where a remote observation is turned into a perception, then gated (`CAP-7`) |
 | `core/parameters.py` | Every number the memory system uses, with its source and how to swap it (`OPEN-13`) |
 | `core/episodes.py` | The long-term episode store sleep transfers into (`OPEN-17`) |
 | `core/sensory.py` | Camera + microphone front end, body state (awareness, load) |
+| `core/vision_model.py` | The detector IT names objects with, and why it sometimes cannot (`OPEN-10`) |
 | `core/seeing.py` / `core/hearing.py` | One store per sense, each with real forgetting |
 | `core/pure_learning.py` | Vocabulary, word patterns and concepts learned from experience |
 | `core/human_like.py` | Mood, personality, preferences, social state - holds no memories (`OPEN-19`) |
@@ -31,9 +33,14 @@ state is never committed to this repository — pictures are not memories.
 | `ui/`, `gui_main.py` | Experimental GUI, will be rebuilt |
 | `test_*.py` | Test suite |
 
-There is no external model to configure anywhere in the repository: the network
-lives in `core/pure_network.py` and is plain Python, because the model is one we
-train ourselves.
+There is no chat model and nothing to configure: the learning network lives
+in `core/pure_network.py` and is plain Python, because the model is one we
+train ourselves. The one thing fetched from outside is the **detector** that
+gives IT its vocabulary - NanoDet, Apache-2.0, 3.8MB, pulled into `models/` on
+first use and verified against a pinned hash (`OPEN-10`). Without it, IT falls
+back to colour-and-edge heuristics rather than going blind, and
+`python fetch_vision_model.py` brings it down ahead of time if you would
+rather not wait for it during the bot's first look at the room.
 
 ## Requirements
 
@@ -189,13 +196,15 @@ is safe to run while `main.py` is running.
 python -m pytest -v
 ```
 
-86 tests in about fifteen seconds. They need **only pytest** - `core/` imports
+101 tests in about fifteen seconds. They need **only pytest** - `core/` imports
 nothing outside the standard library at module level, so no camera, no
 microphone, no model weights, and no writes outside a temporary directory.
 The perception tests (`CAP-7`) additionally need `numpy` and `opencv`, both in
 `requirements.txt`, and skip rather than fail when those are missing - so
 `pip install pytest` on its own still passes. The uplink tests talk only to a
-server one of their own fixtures starts on `127.0.0.1`.
+server one of their own fixtures starts on `127.0.0.1`. `conftest.py` also
+takes the network away from every test, download included, so a green build
+never depends on github.com being up.
 
 The same suite runs on every push through GitHub Actions
 (`.github/workflows/tests.yml`).
@@ -222,9 +231,13 @@ This is a long-running project, built one complete step at a time.
   still-sensing behaviour, persistence across restarts, test suite with CI, and
   the first capability: an HTTP uplink other devices feed vision and hearing
   through (`CAP-5`–`CAP-8`), raw bytes on the wire, perception and the gate
-  on the host.
+  on the host, and the first half of `OPEN-10` - perception quality: a real
+  detector names what is in the frame instead of a guess made from colour and
+  edge density, and the same detector runs on the local eye and on every
+  remote one alike.
 - **Next:** the input half of `STEP-2` - wiring what the senses perceive into
-  the learning system, which `OPEN-10` parked for exactly this step.
+  the learning system, which `OPEN-10` parked for exactly this step. Vision is
+  patched; hearing follows it, one sense at a time as the author asked.
 
 ## License
 

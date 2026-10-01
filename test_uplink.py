@@ -57,12 +57,6 @@ TOKEN = "a-token-nobody-could-guess"
 DEVICE = "desk-eye"
 
 
-@pytest.fixture(autouse=True)
-def no_camera(monkeypatch):
-    """These tests must never touch hardware."""
-    monkeypatch.setattr(SeeingSystem, "_check_camera", lambda self: None)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

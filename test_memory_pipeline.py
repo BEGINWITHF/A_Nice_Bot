@@ -33,12 +33,6 @@ from core.pure_learning import PureLearningSystem
 from core.sensory import SensorySystem
 
 
-@pytest.fixture(autouse=True)
-def no_camera(monkeypatch):
-    """These tests must never touch hardware."""
-    monkeypatch.setattr(SeeingSystem, "_check_camera", lambda self: None)
-
-
 def new_pipeline(tmp_path, **policy):
     return MemoryPipeline(data_dir=str(tmp_path / "mem"), policy=policy or None)
 

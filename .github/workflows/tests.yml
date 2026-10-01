@@ -25,5 +25,21 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install pytest numpy opencv-python-headless
 
+      # OPEN-10: bring the detector in so CI exercises a real model load and
+      # not just the offline decoding.  Best effort - if the download fails the
+      # test skips rather than fails, so a red build has to mean a real bug and
+      # never "raw.githubusercontent was flaky".
+      - name: Cache the vision model
+        id: vision-model
+        uses: actions/cache@v4
+        with:
+          path: models/vision
+          key: vision-model-nanodet-2022nov
+
+      - name: Fetch the vision model
+        if: steps.vision-model.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: python fetch_vision_model.py
+
       - name: Run tests
         run: python -m pytest -v

@@ -7,6 +7,37 @@ import json
 import os
 from datetime import datetime
 
+# Named colour ranges - the vocabulary V4 speaks.  Module level so that the
+# whole-frame pass and one detected object's crop are described with the same
+# words: a colour name in known_objects only means anything if both sides used
+# these ranges.
+COLOR_RANGES = {
+    "red1": ([0, 50, 50], [10, 255, 255]),
+    "red2": ([170, 50, 50], [180, 255, 255]),
+    "orange": ([10, 50, 50], [25, 255, 255]),
+    "yellow": ([25, 50, 50], [35, 255, 255]),
+    "green": ([35, 50, 50], [85, 255, 255]),
+    "blue": ([100, 50, 50], [130, 255, 255]),
+    "purple": ([130, 50, 50], [170, 255, 255]),
+}
+
+
+def _color_fractions(image):
+    """Share of the image covered by each named colour range."""
+    import cv2
+    import numpy as np
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    total = max(1, image.shape[0] * image.shape[1])
+    fractions = {}
+    for name, (lower, upper) in COLOR_RANGES.items():
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        area = np.sum(mask > 0)
+        if area > 0:
+            fractions[name] = float(area) / total
+    return fractions
+
+
 class SeeingSystem:
     """
     The AI's seeing system with biological visual processing.
@@ -49,7 +80,13 @@ class SeeingSystem:
         # Visual attention
         self.attention_map = None  # What we're focusing on
         self.saccades = []  # Eye movements
-        
+
+        # Object recognition (OPEN-10).  Constructing it is free: nothing is
+        # downloaded and no cv2 is imported until the first frame arrives.
+        from .vision_model import Detector
+        self.detector = Detector()
+        self.it_detections = []  # richest form of the last IT output
+
         self._load_state()
         self._check_camera()
     
@@ -173,39 +210,18 @@ class SeeingSystem:
         V4 Processing: Color and Shape
         Processes color information and complex shapes
         """
-        import cv2
-        import numpy as np
-        
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         color_shape = {
             "colors": {},
             "dominant_color": None,
             "shape_features": []
         }
-        
+
         # Color detection (like V4 color processing)
-        color_ranges = {
-            "red1": ([0, 50, 50], [10, 255, 255]),
-            "red2": ([170, 50, 50], [180, 255, 255]),
-            "orange": ([10, 50, 50], [25, 255, 255]),
-            "yellow": ([25, 50, 50], [35, 255, 255]),
-            "green": ([35, 50, 50], [85, 255, 255]),
-            "blue": ([100, 50, 50], [130, 255, 255]),
-            "purple": ([130, 50, 50], [170, 255, 255])
-        }
-        
-        max_color_area = 0
-        for color_name, (lower, upper) in color_ranges.items():
-            lower = np.array(lower)
-            upper = np.array(upper)
-            mask = cv2.inRange(hsv, lower, upper)
-            area = np.sum(mask > 0)
-            if area > 0:
-                color_shape["colors"][color_name] = float(area) / (frame.shape[0] * frame.shape[1])
-                if area > max_color_area:
-                    max_color_area = area
-                    color_shape["dominant_color"] = color_name
-        
+        color_shape["colors"] = _color_fractions(frame)
+        if color_shape["colors"]:
+            color_shape["dominant_color"] = max(
+                color_shape["colors"], key=color_shape["colors"].get)
+
         # Shape features from V2 contours
         for contour in v2_contours.get("contours", [])[:5]:
             area = contour["area"]
@@ -234,29 +250,76 @@ class SeeingSystem:
         """
         IT Processing: Inferotemporal Cortex
         Object recognition and memory integration
+
+        OPEN-10, the author's answer of 2026-10-01: patch perception quality
+        first and wire the learning up afterwards, one sense at a time, vision
+        first.  "Patched" means IT names what is actually in the frame rather
+        than inferring a name from edge density and the frame's dominant
+        colour.
+
+        The old version also read names back out of known_objects and appended
+        any whose stored colour matched the frame's dominant colour.  That was
+        circular: an entry could only be in known_objects because IT had named
+        it once, and because the colour was measured over the whole frame,
+        every entry carrying it came back on every frame whether or not the
+        object was still there.  It is gone - known_objects is written from
+        detections and is never read back into recognition.
         """
+        detections = self.detector.detect(frame)
+        self.it_detections = detections
+
         objects = []
-        
-        # Combine features for object recognition
-        brightness = v1_features.get("brightness", 0)
+        if self.detector.available:
+            # One entry per name, strongest first: the label is what gets
+            # stored, so repeating it here would only inflate times_seen.
+            # An empty list is a real answer - the detector ran and the desk
+            # really does hold no person - so the heuristics below must not
+            # get a second vote and invent something it just denied.
+            for detection in sorted(detections, key=lambda d: -d["confidence"]):
+                if detection["label"] not in objects:
+                    objects.append(detection["label"])
+            self.it_objects = objects
+            return objects
+
+        # No detector - no cv2, no weights, or no network.  Fall back to the
+        # feature heuristics rather than go blind, and leave the reason in
+        # self.detector.error so a caller can log it instead of guessing.
         edge_density = v1_features.get("edge_density", 0)
         shape_complexity = v2_contours.get("shape_complexity", 0)
         dominant_color = v4_shapes.get("dominant_color")
-        
-        # Simple object categorization based on features
+
         if edge_density > 0.1 and shape_complexity > 0.3:
             objects.append("complex_object")
         elif dominant_color and v4_shapes["colors"].get(dominant_color, 0) > 0.1:
             objects.append(f"{dominant_color}_object")
-        
-        # Check for known objects in memory
-        for obj_name, obj_data in self.known_objects.items():
-            if obj_data.get("dominant_color") == dominant_color:
-                objects.append(obj_name)
-        
+
         self.it_objects = objects
         return objects
     
+    def _object_color(self, label, frame, detections, fallback):
+        """
+        The colour of one object, not of whatever it happened to be standing in.
+
+        The ledger used to store the whole frame's dominant colour under each
+        object, so two unrelated things caught in the same view came back
+        sharing a colour - and that shared colour is exactly what the old
+        recognition loop read back to declare them the same object.  A
+        detection gives us a box, so we can simply look at the box.
+        """
+        for detection in detections:
+            if detection.get("label") != label:
+                continue
+            x1, y1, x2, y2 = (int(round(v)) for v in detection["box"])
+            crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+            fractions = _color_fractions(crop) if crop.size else {}
+            if fractions:
+                return max(fractions, key=fractions.get)
+            # Clearly seen, but it carries no named colour of its own.
+            return None
+        # Heuristic labels have no box: they came out of the frame, so the
+        # frame's colour is the only one they can honestly be given.
+        return fallback
+
     def _visual_attention(self, frame, features):
         """
         Visual Attention Mechanism
@@ -324,12 +387,15 @@ class SeeingSystem:
 
         # Learn from what was seen using IT processing
         if analysis:
+            detections = analysis.get("detections", [])
+            frame_color = analysis.get("v4_shapes", {}).get("dominant_color")
             for obj in analysis.get("it_objects", []):
                 if obj not in self.known_objects:
                     self.known_objects[obj] = {
                         "first_seen": datetime.now().isoformat(),
                         "times_seen": 1,
-                        "dominant_color": analysis.get("v4_shapes", {}).get("dominant_color"),
+                        "dominant_color": self._object_color(
+                            obj, frame, detections, frame_color),
                         "features": {
                             "brightness": analysis.get("v1_features", {}).get("brightness", 0),
                             "edge_density": analysis.get("v1_features", {}).get("edge_density", 0),
@@ -397,6 +463,7 @@ class SeeingSystem:
             "v2_contours": v2_contours,
             "v4_shapes": v4_shapes,
             "it_objects": it_objects,
+            "detections": list(self.it_detections),
             "attention": attention,
             "objects": it_objects,
             "colors": list(v4_shapes.get("colors", {}).keys()),
@@ -527,43 +594,3 @@ class SeeingSystem:
         if any(dropped.values()):
             self._save_state()
         return dropped
-
-    def recognize_object(self, frame):
-        """
-        Recognize objects in a frame using learned patterns
-        Like IT cortex matching against stored memories
-        """
-        import cv2
-        import numpy as np
-        
-        # Process through visual pipeline
-        v1 = self._v1_processing(frame)
-        v2 = self._v2_processing(frame, v1)
-        v4 = self._v4_processing(frame, v1, v2)
-        
-        recognized = []
-        
-        # Compare against known objects
-        for obj_name, obj_data in self.known_objects.items():
-            similarity = 0
-            
-            # Color similarity
-            if v4.get("dominant_color") == obj_data.get("dominant_color"):
-                similarity += 0.4
-            
-            # Brightness similarity
-            brightness_diff = abs(v1.get("brightness", 0) - obj_data.get("features", {}).get("brightness", 0))
-            similarity += max(0, 0.3 - brightness_diff)
-            
-            # Memory strength affects recognition
-            memory_strength = obj_data.get("memory_strength", 0.5)
-            similarity *= memory_strength
-            
-            if similarity > 0.3:
-                recognized.append({
-                    "object": obj_name,
-                    "confidence": similarity,
-                    "times_seen": obj_data.get("times_seen", 0)
-                })
-        
-        return recognized
