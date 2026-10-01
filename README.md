@@ -228,4 +228,12 @@ This is a long-running project, built one complete step at a time.
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+AGPL-3.0 — see [LICENSE](LICENSE).
+
+This was GPL-3.0 until 2026-10-01. The two are both open source and both
+allow commercial use; what differs is *when* you owe people your changes.
+GPL only asks when you hand out a copy, which means someone could run a
+modified A_Nice_Bot as a closed SaaS and owe nothing — and this bot is
+nothing but a long-running networked service (`CAP-5`, `GOAL-1`). AGPL
+closes that: whoever interacts with it over a network gets the source of
+what they are talking to. `OPEN-20` records the change.

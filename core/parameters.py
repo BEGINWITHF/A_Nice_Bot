@@ -274,6 +274,9 @@ SLEEP_CYCLE_S = 90 * 60
 # # ASSUMPTION: no literature gives a startle threshold; 0.8 sits above the
 #               0.6 that sleep spends replays on, so "worth a replay" and
 #               "loud enough to wake me" are different questions.
+# Reviewed by the author 2026-10-01 and deliberately left as an assumption:
+#   "继续挂着" - no citation exists yet, and inventing one would be worse
+#   than keeping the marker visible.
 # SWAP:       any salience quantile; record() reads it once per observation.
 STARTLE_SALIENCE = 0.8
 
