@@ -143,11 +143,18 @@ def sense_once(camera, mic):
             # Salience gate (CAP-7): the host decides what is worth
             # keeping, a frame with nothing new is not memorised
             if result and "analysis" in result:
-                objects = result["analysis"].get("it_objects") or []
+                what = result["analysis"].get("what") or []
                 pipeline.record(
                     "seeing",
-                    {"objects": sorted(objects)},
-                    salience=visual_salience(objects, senses.seeing.known_objects),
+                    # The whole observation is its perceptual representation:
+                    # a flat list of numbers, ordered by priority, with no
+                    # key anywhere in it (DATA-7, Q1).  Never sorted - the
+                    # order is the content.
+                    {"what": what},
+                    salience=visual_salience(
+                        senses.seeing.last_induction,
+                        senses.seeing.known_objects,
+                    ),
                 )
 
         # 2. HEAR - Microphone captures sounds
@@ -157,8 +164,6 @@ def sense_once(camera, mic):
                 # Process through sensory system
                 result = senses.hear_sound("sound", volume=sound["volume"])
 
-                # AI's internal processing (silent)
-                brain.hear_word("sound")
                 # Salience gate: room tone is not a memory, a loud sound is
                 volume = sound["volume"]
                 pipeline.record(
@@ -205,7 +210,7 @@ def start_uplink():
         return None
 
     server = ObservationServer(
-        HostIngest(senses, brain, pipeline, INGEST_LOCK),
+        HostIngest(senses, pipeline, INGEST_LOCK),
         bind=cfg["bind"],
         port=cfg["port"],
         token=cfg["token"],

@@ -57,9 +57,8 @@ class HostIngest:
     be writing a JSON file while the other is mid-sleep.
     """
 
-    def __init__(self, senses, brain, pipeline, lock=None):
+    def __init__(self, senses, pipeline, lock=None):
         self.senses = senses
-        self.brain = brain
         self.pipeline = pipeline
         self.lock = lock if lock is not None else threading.RLock()
 
@@ -84,17 +83,22 @@ class HostIngest:
         if not result or "analysis" not in result:
             raise UplinkError(422, "frame could not be analysed")
 
-        objects = result["analysis"].get("it_objects") or []
+        what = result["analysis"].get("what") or []
 
         # CAP-7: the gate is here, on the host, in the same place a frame
         # from the local camera meets it.  The device never sees the result.
         entry = self.pipeline.record(
             "seeing",
-            {"objects": sorted(objects)},
-            salience=visual_salience(objects, self.senses.seeing.known_objects),
+            {"what": what},
+            salience=visual_salience(
+                self.senses.seeing.last_induction,
+                self.senses.seeing.known_objects,
+            ),
         )
+        # Only the count crosses back.  The perceptual representation is the
+        # bot's own; the device is an eye, not a reader.
         return {"channel": "vision", "recorded": entry is not None,
-                "objects": sorted(objects)}
+                "regions": len(what)}
 
     def _sound(self, body, meta):
         np = _audio_lib()
@@ -113,7 +117,6 @@ class HostIngest:
             return {"channel": "sound", "recorded": False, "silence": True}
 
         self.senses.hear_sound("sound", volume=volume)
-        self.brain.hear_word("sound")
 
         entry = self.pipeline.record(
             "hearing",

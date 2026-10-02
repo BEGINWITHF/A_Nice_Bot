@@ -1,16 +1,16 @@
 """
 Fixtures the whole suite shares.
 
-Two rules, enforced once here instead of once per test file: a test run must
-touch no hardware and reach no network.  The hardware half is old.  The
-network half is new with OPEN-10 - the detector fetches its weights the first
-time a frame is seen, which is right in production and wrong in a test run,
-where a green build must not depend on github.com being up.
+One rule, enforced once here instead of once per test file: a test run must
+touch no hardware.  There used to be a second rule about the network, added
+with OPEN-10 so that a green build would not depend on github.com being up
+while the detector fetched its weights.  The detector went with OPEN-10 a
+- perception is the bot's own now - and with it went the only thing in the
+repository that reached for the network.
 """
 
 import pytest
 
-from core import vision_model
 from core.seeing import SeeingSystem
 
 
@@ -18,19 +18,3 @@ from core.seeing import SeeingSystem
 def no_camera(monkeypatch):
     """These tests must never touch hardware."""
     monkeypatch.setattr(SeeingSystem, "_check_camera", lambda self: None)
-
-
-@pytest.fixture(autouse=True)
-def no_model_fetch(monkeypatch):
-    """
-    The detector must not download anything while tests are running.
-
-    Every test that wants the real fetch back can ask for it by patching
-    ``vision_model.fetch_model`` again with the function it captured at import
-    time; the teardown below unwinds both.
-    """
-
-    def blocked(path=None):
-        raise RuntimeError("vision model fetch is disabled in tests")
-
-    monkeypatch.setattr(vision_model, "fetch_model", blocked)

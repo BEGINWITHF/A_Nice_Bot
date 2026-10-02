@@ -43,7 +43,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import uplink_config
 from core.host_ingest import HostIngest
 from core.memory_pipeline import MemoryPipeline
-from core.pure_learning import PureLearningSystem
 from core.seeing import SeeingSystem
 from core.sensory import SensorySystem
 from core.uplink import (
@@ -151,12 +150,11 @@ def base(server):
 
 @pytest.fixture
 def host(tmp_path):
-    """A whole brain with a permissive gate, for the CAP-7 half."""
+    """A whole host with a permissive gate, for the CAP-7 half."""
     pipeline = MemoryPipeline(data_dir=str(tmp_path / "mem"),
                               policy={"min_salience": 0.0})
-    brain = PureLearningSystem(str(tmp_path / "brain"))
     senses = SensorySystem(str(tmp_path / "senses"))
-    ingest = HostIngest(senses, brain, pipeline)
+    ingest = HostIngest(senses, pipeline)
     ingest.spy = []
     real = pipeline.record
 
@@ -365,7 +363,7 @@ def test_a_remote_frame_is_seen_through_the_local_eye(host):
     # only its provenance telling it apart from the local camera.
     assert seen[-1]["type"] == "camera:%s" % DEVICE
     assert result["channel"] == "vision"
-    assert isinstance(result["objects"], list)
+    assert isinstance(result["regions"], int)
 
 
 @needs_cv2
@@ -374,7 +372,7 @@ def test_a_remote_frame_reaches_the_pipeline_with_a_salience(host):
 
     assert [kind for kind, _, _ in host.spy] == ["seeing"]
     _, payload, salience = host.spy[0]
-    assert set(payload) == {"objects"}
+    assert set(payload) == {"what"}
     assert 0.0 <= salience <= 1.0
 
 
@@ -428,7 +426,6 @@ def test_the_local_loop_and_an_uplink_share_one_lock(tmp_path):
     lock = threading.RLock()
     ingest = HostIngest(
         SensorySystem(str(tmp_path / "s")),
-        PureLearningSystem(str(tmp_path / "b")),
         MemoryPipeline(data_dir=str(tmp_path / "m"), policy={"min_salience": 0.0}),
         lock,
     )

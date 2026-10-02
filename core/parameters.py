@@ -164,16 +164,40 @@ SILENCE_FLOOR = 0.01
 # SWAP:       any single measured mean; only segment() reads it.
 WINDOW_S = 30.0
 
-# How different the content must be for a cut to happen *before* the window
-# expires (the G in OPEN-16 G: "window first, content shock cuts early").
-# Measured as 1 - Jaccard similarity over the *set* fields of the payload.
+# OPEN-21 point B (2026-10-02): an early cut is not a distance from the frame
+# an event started on.  It is a prediction error running above its own
+# baseline, and both halves of that come straight from Kurby & Zacks (2008):
 #
-# # ASSUMPTION: no literature gives a shock threshold for this comparison.
-#               The direction is sourced - Zacks & Swallow (2007) "when a
-#               salient feature changes" and Zacks et al. (2010) situation
-#               changes predict segmentation - but 0.6 is ours.
+#   "event models ... integrating information over the recent past"        (L162)
+#   "When prediction errors transiently increase relative to their
+#    current baseline, event models are updated"                          (L163-164)
+#
+# So what is measured is (a) how far the current input sits from a model that
+# keeps following the input, and (b) how far that error now sits above the
+# error this very event has been running at.  The old SHOCK_THRESHOLD = 0.6
+# was an absolute distance against the first frame frozen at event start,
+# which is neither of those - and no person segments events that way.
+#
+# # ASSUMPTION: the literature gives the shape of this rule and not one of its
+#               numbers.  All three below are ours.
+#
+# EVENT_MODEL_TAU_S: how readily the model follows the input.  Short enough
+#               that a slow drift is caught up with (and therefore never
+#               cuts) and long enough that one noisy frame cannot redefine
+#               what is going on.
+# SWAP:       raise it for a stubborn model, lower it for a skittish one.
+EVENT_MODEL_TAU_S = 5.0
+
+# SHOCK_RATIO: how far above its own baseline an error must sit to count as a
+#               transient increase rather than this event's usual amount of
+#               being wrong.
 # SWAP:       raise it for coarser events, lower it for finer ones.
-SHOCK_THRESHOLD = 0.6
+SHOCK_RATIO = 2.0
+
+# SHOCK_FLOOR: below this an error is not a signal at all - without it a
+#               baseline sitting near zero would make any wobble a shock.
+# SWAP:       raise it in a noisy room.
+SHOCK_FLOOR = 0.10
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,12 @@
 """
-Test script for Pure AI system
-Tests learning without any pre-trained knowledge
+Tests for PureLearningSystem after DATA-7 read A.
+
+There is no conversation in here any more, and that is the point: the old
+demo fed it ten English sentences and then asserted that a vocabulary grew.
+A person does not keep a word list in memory, so the system does not keep
+one either, and what remains to be tested is the part a person does have -
+sequential pattern learning - plus the guarantee that nothing keyed by a
+word is left anywhere, on the object or on disk.
 
 pytest runs the demo against a temporary directory and asserts on the result.
 Running this file directly still prints the demo into data/test_pure.
@@ -8,61 +14,53 @@ Running this file directly still prints the demo into data/test_pure.
 
 import sys
 import os
+import json
 
 # Add the project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.pure_learning import PureLearningSystem
 
-TEST_CONVERSATIONS = [
-    ("Hello", "Hi there"),
-    ("What is your name?", "I am learning"),
-    ("I am your teacher", "Teacher"),
-    ("The sky is blue", "Blue sky"),
-    ("The sun is warm", "Warm sun"),
-    ("I love you", "Love"),
-    ("You are smart", "Smart"),
-    ("Learning is fun", "Fun learning"),
-    ("Hello again", "Hello"),
-    ("Goodbye", "Bye"),
+# Ten short runs of "what came next", as ledger keys perception hands down.
+# They are integers on purpose: a pattern is a transition between two
+# things, and a person's sequence of things is not made of words.
+TEST_SEQUENCES = [
+    [0, 3, 3],
+    [1, 0, 7],
+    [2, 5, 1],
+    [0, 3, 9],
+    [4, 4, 2],
 ]
+
+# Everything DATA-7 read A forbids from ever existing.
+FORBIDDEN_ON_THE_OBJECT = (
+    "word_to_index", "index_to_word", "word_frequency",
+    "vocabulary_size", "concepts",
+    "meaning_network", "prediction_network",
+)
+
+# ...and everything it forbids from ever being written to disk.
+FORBIDDEN_ON_DISK = (
+    "word_to_index", "index_to_word", "word_frequency",
+    "vocabulary_size", "concepts",
+)
 
 
 def run_demo(data_dir):
-    """Learn from ten conversations. Returns the PureLearningSystem."""
-    print("Testing Pure AI System...")
+    """Learn five sequences. Returns the PureLearningSystem."""
+    print("Testing Pure Learning System...")
     print("=" * 50)
 
-    # Create a pure AI
     ai = PureLearningSystem(data_dir=data_dir)
 
     print("Initial state - knows nothing")
-    print(f"Vocabulary: {ai.vocabulary_size} words")
     print(f"Patterns: {len(ai.patterns)}")
-    print(f"Concepts: {len(ai.concepts)}")
     print()
 
-    # Simulate learning through interaction
-    for i, (input_text, _expected_context) in enumerate(TEST_CONVERSATIONS):
-        print(f"Interaction {i+1}: '{input_text}'")
-
-        # Learn from this interaction
-        words = input_text.lower().split()
-        for word in words:
-            ai.learn_word(word)
-
-        # Learn meaning from context
-        if len(words) >= 2:
-            for word in words:
-                ai.learn_meaning(word, input_text)
-
-        # Learn pattern
-        ai.learn_pattern(words)
-
-        # Internal processing
-        ai.internal_process(input_text)
-        print("AI processes internally (no text output)")
-        print(f"Vocabulary: {ai.vocabulary_size} words")
+    for i, sequence in enumerate(TEST_SEQUENCES):
+        ai.learn_pattern(sequence)
+        print(f"Sequence {i+1}: {sequence}")
+        print(f"Patterns so far: {len(ai.patterns)}")
         print()
 
     print("=" * 50)
@@ -80,33 +78,42 @@ def run_demo(data_dir):
 
 
 def test_pure_ai(tmp_path):
-    """The system must learn: vocabulary, patterns, concepts, and persist."""
+    """The system learns transitions, keeps no language, and persists."""
     ai = run_demo(str(tmp_path / "pure"))
 
-    # starts at 4 special tokens, must have grown
-    assert ai.vocabulary_size > 4
-    assert len(ai.word_to_index) == ai.vocabulary_size
-    assert len(ai.index_to_word) == ai.vocabulary_size
+    # every adjacent pair of each sequence is one transition, duplicates met
+    # again rather than duplicated
+    expected = set()
+    for sequence in TEST_SEQUENCES:
+        for i in range(len(sequence) - 1):
+            expected.add((sequence[i], sequence[i + 1]))
+    assert len(ai.patterns) == len(expected)
 
-    # word pairs were learned from the conversations
-    assert len(ai.patterns) > 0
-    # every conversation of two words or more produced a concept
-    assert len(ai.concepts) > 0
+    # DATA-5: a pattern carries a clock and nothing else
+    for p in ai.patterns:
+        assert set(p) == {"from", "to", "learned_at"}
+
+    # DATA-7 read A: the word structures must not exist at all. This is a
+    # regression guard, not a preference - the next person to add a
+    # vocabulary back fails here.
+    for name in FORBIDDEN_ON_THE_OBJECT:
+        assert not hasattr(ai, name), f"{name} came back"
 
     stats = ai.get_stats()
-    assert stats["vocabulary_size"] == ai.vocabulary_size
     assert stats["patterns_learned"] == len(ai.patterns)
-    assert stats["concepts_learned"] == len(ai.concepts)
 
-    # encoding round trip: a word maps to a vector of the right size
-    assert len(ai.encode_word("hello")) == 100
+    # ...and nothing keyed by a word may reach the disk either
+    state_file = os.path.join(str(tmp_path / "pure"), "learning_state.json")
+    with open(state_file, "r", encoding="utf-8") as fh:
+        on_disk = json.load(fh)
+    for name in FORBIDDEN_ON_DISK:
+        assert name not in on_disk, f"{name} was written back"
 
     # all of it survives a restart
     again = PureLearningSystem(str(tmp_path / "pure"))
-    assert again.vocabulary_size == ai.vocabulary_size
-    assert again.word_to_index == ai.word_to_index
     assert len(again.patterns) == len(ai.patterns)
-    assert len(again.concepts) == len(ai.concepts)
+    for name in FORBIDDEN_ON_THE_OBJECT:
+        assert not hasattr(again, name), f"{name} came back after a reload"
 
 
 if __name__ == "__main__":

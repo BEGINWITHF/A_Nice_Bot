@@ -251,19 +251,19 @@ def show_human():
 
 def show_learning():
     state = load(f"{DATA}/pure/learning_state.json")
-    head("LEARNING   (long term: vocabulary, patterns, concepts)")
+    head("LEARNING   (long term: patterns learned)")
     if not state:
         print("  no state yet")
         return
-    print(f"vocabulary {state.get('vocabulary_size', 0)} words  "
-          f"{len(state.get('patterns', []))} word patterns  "
-          f"{len(state.get('concepts', []))} concepts")
+    print(f"{len(state.get('patterns', []))} learned patterns")
 
-    ranked = sorted(state.get("word_frequency", {}).items(),
-                    key=lambda kv: kv[1], reverse=True)
-    if ranked:
-        top = "  ".join(f"{w}({n})" for w, n in ranked[:8])
-        print(f"most heard: {top}")
+    # An older ledger still carrying a vocabulary is reported as what it is:
+    # language waiting to be erased on the next save, not knowledge.
+    leftovers = [k for k in ("word_to_index", "index_to_word",
+                             "word_frequency", "vocabulary_size", "concepts")
+                 if state.get(k)]
+    if leftovers:
+        print(f"  legacy keys awaiting the next save: {', '.join(leftovers)}")
 
 
 def show_sensory():

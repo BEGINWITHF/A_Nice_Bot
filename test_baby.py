@@ -60,7 +60,8 @@ def run_demo(data_dir):
 
 
 def test_baby_brain(tmp_path):
-    """The baby must actually develop: age, stage, trust, vocabulary."""
+    """The baby must develop: age, stage, trust - and keep none of what it
+    was told (DATA-7 read A)."""
     baby = run_demo(str(tmp_path / "baby"))
 
     # one recorded experience per interaction
@@ -76,15 +77,21 @@ def test_baby_brain(tmp_path):
     assert baby.known_people["TestUser"]["interactions"] == len(TEST_INPUTS)
     assert baby.trust_level == 5.0
 
-    # words longer than two characters were learned
-    assert len(baby.vocabulary) > 15
+    # nothing of what was said was written down - a baby forms an attachment
+    # from being talked to, not from the sentences it was told
+    assert not hasattr(baby, "vocabulary")
+    assert not hasattr(baby, "concepts")
+    for experience in baby.episodic_memory:
+        assert experience["content"] is None
+        assert experience["type"] == "social"
 
     # and all of it survives a restart
     again = BabyBrain(str(tmp_path / "baby"))
     assert again.age == baby.age
     assert again.stage == baby.stage
     assert again.experience_count == baby.experience_count
-    assert len(again.vocabulary) == len(baby.vocabulary)
+    assert not hasattr(again, "vocabulary")
+    assert not hasattr(again, "concepts")
     assert again.known_people["TestUser"]["interactions"] == len(TEST_INPUTS)
     assert again.trust_level == baby.trust_level
 

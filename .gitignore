@@ -18,7 +18,7 @@ data/
 # configs/uplink.example.json is the committed template.
 configs/uplink.json
 
-# Vision weights (OPEN-10).  3.8MB of Apache-2.0 ONNX, fetched on demand from
-# core/vision_model.py and checked against a pinned hash - the repository
-# stores where it comes from, not the bytes.
+# Vision weights (OPEN-10).  The detector went with OPEN-10 a - perception is
+# the bot's own now - but a copy downloaded before then is still 3.8MB of
+# ONNX sitting on somebody's disk, and it should never reach the repository.
 models/

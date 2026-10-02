@@ -146,24 +146,74 @@ def test_window_expires_and_the_next_observation_starts_a_new_event(tmp_path):
 
 
 def test_content_shock_cuts_early(tmp_path):
-    """G's exception: the situation replaced itself completely."""
-    p = new_pipeline(tmp_path, window_s=30.0, shock_threshold=0.6)
+    """G's exception: a prediction error spikes above this event's own baseline."""
+    p = new_pipeline(tmp_path, window_s=30.0)
 
-    a = p.record("seeing", {"objects": ["cup", "plate"]},
-                 salience=0.5, now=1000.0)
-    b = p.record("seeing", {"objects": ["lamp", "chair"]},
-                 salience=0.5, now=1005.0)
+    steady = {"what": [[0.10, 0.10, 0.10]]}
+    a = p.record("seeing", steady, salience=0.5, now=1000.0)
+    for step in range(1, 15):       # let the model settle on that situation
+        p.record("seeing", steady, salience=0.5, now=1000.0 + step)
+
+    # The situation replaces itself: every dimension moves at once.
+    b = p.record("seeing", {"what": [[0.90, 0.90, 0.90]]},
+                 salience=0.5, now=1015.0)
 
     assert b is not a and a["key"] != b["key"]
 
 
+def test_a_slow_drift_never_cuts_early(tmp_path):
+    """
+    The half of OPEN-21 point B that a frozen first frame could not do.
+
+    A model that integrates the recent past follows a drift, so the error
+    against it stays near its own baseline however far the input has walked
+    from where the event began.  Compared against the event's first frame -
+    the rule this replaced - this very same walk would have cut on frame two.
+    """
+    p = new_pipeline(tmp_path, window_s=30.0)
+
+    entries = []
+    for step in range(30):
+        level = 0.015 * step                      # 0.00 -> 0.425, one way
+        entry = p.record("seeing", {"what": [[level, level, level]]},
+                         salience=0.5, now=1000.0 + step)
+        entries.append(entry)
+
+    assert all(entry is entries[0] for entry in entries)
+    assert entries[-1]["payload"]["what"] == [[0.0, 0.0, 0.0]]   # first kept
+
+
+def test_frame_to_frame_noise_does_not_cut_early(tmp_path):
+    """
+    The other half: an error that is always around the same size is that
+    event's baseline, not a transient increase over it (Kurby & Zacks
+    2008:163).
+    """
+    p = new_pipeline(tmp_path, window_s=30.0)
+
+    entries = []
+    for step in range(25):
+        jitter = 0.04 if step % 2 else 0.00       # small, constant, noisy
+        entry = p.record("seeing", {"what": [[jitter, jitter, jitter]]},
+                         salience=0.5, now=1000.0 + step)
+        entries.append(entry)
+
+    assert all(entry is entries[0] for entry in entries)
+
+
 def test_a_shock_cannot_cut_twice_in_the_same_window(tmp_path):
     """Otherwise G degenerates back into E (a new entry per frame)."""
-    p = new_pipeline(tmp_path, window_s=30.0, shock_threshold=0.6)
+    p = new_pipeline(tmp_path, window_s=30.0)
 
-    first = p.record("seeing", {"objects": ["cup"]}, salience=0.5, now=1000.0)
-    second = p.record("seeing", {"objects": ["zzz"]}, salience=0.5, now=1002.0)
-    third = p.record("seeing", {"objects": ["qqq"]}, salience=0.5, now=1004.0)
+    steady = {"what": [[0.10, 0.10, 0.10]]}
+    first = p.record("seeing", steady, salience=0.5, now=1000.0)
+    for step in range(1, 15):
+        p.record("seeing", steady, salience=0.5, now=1000.0 + step)
+
+    second = p.record("seeing", {"what": [[0.90, 0.90, 0.90]]},
+                      salience=0.5, now=1015.0)
+    third = p.record("seeing", {"what": [[0.00, 0.50, 1.00]]},
+                     salience=0.5, now=1017.0)
 
     assert second["key"] != first["key"]    # the one allowed early cut
     assert third["key"] == second["key"]    # second shock in the slot: refused
@@ -171,7 +221,7 @@ def test_a_shock_cannot_cut_twice_in_the_same_window(tmp_path):
 
 def test_scalar_readings_are_not_a_situation_change(tmp_path):
     """volume_band is a degree, not a new event (Zacks 2010 dimensions)."""
-    p = new_pipeline(tmp_path, window_s=30.0, shock_threshold=0.6)
+    p = new_pipeline(tmp_path, window_s=30.0)
 
     a = p.record("hearing", {"volume_band": 3}, salience=0.5, now=1000.0)
     b = p.record("hearing", {"volume_band": 17}, salience=0.5, now=1002.0)
@@ -677,47 +727,44 @@ def test_pure_learning_forgets_by_the_curve_not_by_a_score(tmp_path):
         [{"from": f"a{i}", "to": f"b{i}", "learned_at": fresh} for i in range(10)]
         + [{"from": f"c{i}", "to": f"d{i}", "learned_at": long_ago} for i in range(40)]
     )
-    for i in range(600):
-        ai.concepts[f"word{i}"] = {"context": "ctx", "learned_at": fresh}
-        ai.word_frequency[f"word{i}"] = i
-    ai.concepts["ancient"] = {"context": "ctx", "learned_at": long_ago}
 
-    report = ai.forget_pass(max_patterns=5, max_concepts=10)
+    report = ai.forget_pass(max_patterns=5)
 
-    #40 patterns never rehearsed in 400 days are past the floor (112 days)
+    # 40 patterns never rehearsed in 400 days are past the floor (112 days)
     assert all("strength" not in p for p in ai.patterns)
     assert len(ai.patterns) == 5
     assert all(p["learned_at"] == fresh for p in ai.patterns)
 
-    # the curve deletes the ancient concept before any ranking gets to speak
-    assert "ancient" not in ai.concepts
-    assert len(ai.concepts) == 10
-    assert "word599" in ai.concepts          # frequency still ranks survivors
-
     assert report["patterns"] == 45
-    assert report["concepts"] == 591
+    # the second pass is gone with `concepts`: there is nothing left for a
+    # word-frequency ranking to speak for (DATA-7 read A)
+    assert set(report) == {"patterns"}
 
 
 def test_rehearsing_a_pattern_only_moves_its_clock(tmp_path):
     """Repetition is a rehearsal, not a score the entry carries around."""
     ai = PureLearningSystem(str(tmp_path))
 
-    ai.learn_pattern(["the", "cat", "sat"])
+    ai.learn_pattern(["r7", "r2", "r9"])
     assert set(ai.patterns[0]) == {"from", "to", "learned_at"}
+    assert len(ai.patterns) == 2          # (r7,r2) and (r2,r9)
 
     before = ai.patterns[0]["learned_at"]
-    ai.learn_pattern(["the", "cat"])
+    ai.learn_pattern(["r7", "r2"])        # that pair already exists
     assert len(ai.patterns) == 2
     assert set(ai.patterns[1]) == {"from", "to", "learned_at"}
 
-    # meeting the same pair again must not duplicate or score it
-    ai.learn_pattern(["the", "cat"])
+    # meeting the same pair again must not duplicate it and must not score
+    # it - it only pushes that pair's own clock forward
+    ai.learn_pattern(["r7", "r2"])
     assert len(ai.patterns) == 2
-    assert ai.patterns[1]["learned_at"] >= before
+    assert ai.patterns[0]["learned_at"] >= before
+    assert set(ai.patterns[0]) == {"from", "to", "learned_at"}
 
 
 def test_legacy_patterns_lose_their_strength_on_load(tmp_path):
-    """A file written before OPEN-19 must migrate, not keep the field."""
+    """A file written before OPEN-19 and before DATA-7 must migrate, not keep
+    either the score or the language."""
     ai = PureLearningSystem(str(tmp_path))
     state_file = os.path.join(str(tmp_path), "learning_state.json")
     with open(state_file, "w", encoding="utf-8") as fh:
@@ -733,18 +780,24 @@ def test_legacy_patterns_lose_their_strength_on_load(tmp_path):
 
     assert set(reloaded.patterns[0]) == {"from", "to", "learned_at"}
 
+    # the vocabulary is read past, never assigned - and the next save is what
+    # actually erases it from the file (DATA-7 read A)
+    reloaded._save_state()
+    with open(state_file, "r", encoding="utf-8") as fh:
+        saved = json.load(fh)
+    for banned in ("word_to_index", "index_to_word", "word_frequency",
+                   "vocabulary_size", "concepts"):
+        assert banned not in saved, f"{banned} was written back"
 
-def test_pure_learning_vocabulary_survives_pruning(tmp_path):
-    """Deleting words would scramble the network's one-hot indices."""
+
+def test_pruning_only_ever_touches_patterns(tmp_path):
+    """There is no vocabulary left for a pass to spare from deletion."""
     ai = PureLearningSystem(str(tmp_path))
-    for w in ["alpha", "beta", "gamma"]:
-        ai.learn_word(w)
-    ai.patterns = []
 
-    ai.forget_pass(max_patterns=0, max_concepts=0)
+    report = ai.forget_pass(max_patterns=0)
 
-    assert ai.word_to_index["alpha"] == 4
-    assert ai.vocabulary_size == 7
+    assert ai.patterns == []
+    assert set(report) == {"patterns"}
 
 
 def test_sensory_history_is_capped(tmp_path):

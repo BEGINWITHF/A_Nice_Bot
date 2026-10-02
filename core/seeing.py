@@ -7,35 +7,223 @@ import json
 import os
 from datetime import datetime
 
-# Named colour ranges - the vocabulary V4 speaks.  Module level so that the
-# whole-frame pass and one detected object's crop are described with the same
-# words: a colour name in known_objects only means anything if both sides used
-# these ranges.
-COLOR_RANGES = {
-    "red1": ([0, 50, 50], [10, 255, 255]),
-    "red2": ([170, 50, 50], [180, 255, 255]),
-    "orange": ([10, 50, 50], [25, 255, 255]),
-    "yellow": ([25, 50, 50], [35, 255, 255]),
-    "green": ([35, 50, 50], [85, 255, 255]),
-    "blue": ([100, 50, 50], [130, 255, 255]),
-    "purple": ([130, 50, 50], [170, 255, 255]),
-}
+# Hue bands over OpenCV's 0-179 hue range, **unnamed**.  A colour NAME is a
+# word, and Q1 (2026-10-02) applied the no-words ban to all three layers at
+# once - the momentary analysis, the sensory ledger, and the memory payload
+# may not carry one between them.  The position in this list is an internal
+# index (OPEN-21 C), never a label and never anything the memory sees.
+COLOR_HUE_BANDS = [
+    ([0, 50, 50], [10, 255, 255]),
+    ([10, 50, 50], [25, 255, 255]),
+    ([25, 50, 50], [35, 255, 255]),
+    ([35, 50, 50], [85, 255, 255]),
+    ([100, 50, 50], [130, 255, 255]),
+    ([130, 50, 50], [170, 255, 255]),
+    ([170, 50, 50], [180, 255, 255]),
+]
 
 
 def _color_fractions(image):
-    """Share of the image covered by each named colour range."""
+    """Share of the image covered by each hue band, in band order.
+
+    A fixed-length list rather than a mapping: IO-6 keeps raw numbers in the
+    momentary analysis and out of memory, and a list of numbers has no keys
+    to name anything with.
+    """
     import cv2
     import numpy as np
 
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     total = max(1, image.shape[0] * image.shape[1])
-    fractions = {}
-    for name, (lower, upper) in COLOR_RANGES.items():
-        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-        area = np.sum(mask > 0)
-        if area > 0:
-            fractions[name] = float(area) / total
-    return fractions
+    return [
+        float(np.sum(cv2.inRange(hsv, np.array(lo), np.array(hi)) > 0)) / total
+        for lo, hi in COLOR_HUE_BANDS
+    ]
+
+
+# --- region proposal, descriptors, induction -------------------------------
+# Diary/articles/2026-10-02-it-category-induction-design.md sections 3.1-3.5.
+#
+# # ASSUMPTION: these caps are ours.  Barsalou gives the induction algorithm
+# and no numbers; Wolfe gives the feature classes that count as
+# pre-attentive and no cutoffs for them.
+MAX_REGIONS = 8
+MIN_REGION_AREA = 200
+
+# # ASSUMPTION: Barsalou offers "similar enough" as a judgement and never
+# says how similar, nor how fast a simulation should drift toward the
+# instance that just matched it.  Both numbers are ours.
+INDUCTION_TAU = 0.85
+INDUCTION_ALPHA = 0.10
+
+
+def _saliency_map(gray):
+    """Bottom-up salience: how far each pixel sits from its own surround."""
+    import cv2
+
+    blurred = cv2.GaussianBlur(gray, (21, 21), 0)
+    return cv2.absdiff(gray, blurred)
+
+
+def _similarity(a, b):
+    """
+    How alike two representations are: 1.0 identical, 0.0 far apart.
+
+    Graded on purpose.  Barsalou L1286-1288 says perceptual symbol systems
+    "simply assume that two similar representations are compared", and a
+    comparison between two graded representations is itself graded - a set of
+    tokens either matches or it does not, which is why a Jaccard distance
+    could never carry this question.
+    """
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    return 1.0 - sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+
+
+def _propose_regions(gray, hsv, saliency):
+    """
+    Offer the regions of a frame, with no box anywhere in the path.
+
+    IO-7 admits only pre-attentive sources, so all three are: a closed
+    contour, a saturated colour area, and salience above the frame's own
+    ordinary level.  No source may propose on its own - each candidate has to
+    be hit by at least two of the three - because Wolfe 2020 L107-111 puts
+    contour at the bottom of the pre-attentive table, where it needs the
+    other two to corroborate it.  # ASSUMPTION: "at least two of three" is
+    our reading of that; the literature argues contours are weak and does
+    not say how many sources must agree.
+
+    Nothing here boxes an object: Wolfe-Horowitz L26 sets *important for
+    object recognition* against *guide attention*, so a detector's box would
+    be letting recognition, not attention, decide where a region starts.
+    That is what NanoDet was removed for (OPEN-10 a).
+
+    Returns [(box, mask)], box = (x, y, w, h), mask = the candidate's own
+    binary mask cropped to that box.
+    """
+    import cv2
+    import numpy as np
+
+    # The two sources that carry shape; salience has no outline to describe.
+    edges = cv2.Canny(gray, 50, 150)
+    found, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    bounded = [c for c in found if cv2.contourArea(c) >= MIN_REGION_AREA]
+    mask_bound = np.zeros(gray.shape, np.uint8)
+    if bounded:
+        cv2.drawContours(mask_bound, bounded, -1, 255, -1)
+
+    mask_colour = np.zeros(gray.shape, np.uint8)
+    for lo, hi in COLOR_HUE_BANDS:
+        mask_colour |= cv2.inRange(hsv, np.array(lo), np.array(hi))
+
+    # Above the map's own mean.  The baseline is taken from the frame itself
+    # rather than from a tuned constant - the same idea the event model uses
+    # when it asks whether an error is high *for it* (OPEN-21 point B).
+    mask_salient = (saliency >= float(np.mean(saliency))).astype(np.uint8) * 255
+
+    seed = mask_bound if np.any(mask_bound) else mask_colour
+    if not np.any(seed):
+        return []
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(seed, 8)
+    sources = (mask_bound, mask_colour, mask_salient)
+
+    regions = []
+    for i in range(1, count):
+        x, y, w, h, area = (int(v) for v in stats[i])
+        if area < MIN_REGION_AREA or w < 2 or h < 2:
+            continue
+        component = (labels[y:y + h, x:x + w] == i).astype(np.uint8) * 255
+        hits = sum(
+            1 for source in sources
+            if np.count_nonzero(component & source[y:y + h, x:x + w])
+        )
+        if hits < 2:
+            continue
+        regions.append(((x, y, w, h, area), component))
+
+    return regions
+
+
+def _describe_region(gray, hsv, saliency, mask, box, gabors):
+    """
+    One region as a flat, ordered list of floats.
+
+    Flat and unlabelled on purpose: Q1 (2026-10-02) applies the ban on
+    natural language to memory itself, and this list is exactly what goes
+    into `what`.  The meaning of each position lives here, in code, and is
+    never written down - so there is no key to translate into a word later.
+
+    Returns (salience, descriptor), or None when the region cannot be
+    described at all.
+    """
+    import cv2
+    import numpy as np
+
+    x, y, w, h, area = box
+    region = mask > 0
+    if not np.any(region):
+        return None
+
+    roi_gray = gray[y:y + h, x:x + w]
+    roi_hsv = hsv[y:y + h, x:x + w]
+    roi_sal = saliency[y:y + h, x:x + w]
+    if roi_gray.size == 0:
+        return None
+
+    pixels = roi_gray[region]
+    hsv_pixels = roi_hsv[region]
+    hue = hsv_pixels[:, 0].astype(np.int32)
+    sat = hsv_pixels[:, 1]
+    val = hsv_pixels[:, 2]
+    count = float(pixels.size)
+
+    # Colour: what share of this region falls in each unnamed hue band, plus
+    # its mean saturation and value.  Saturation and value are kept out of
+    # the bands so that a desaturated region still reads as something.
+    saturated = (sat >= 50) & (val >= 50)
+    bands = [
+        float(np.count_nonzero((hue >= lo[0]) & (hue <= hi[0]) & saturated)) / count
+        for lo, hi in COLOR_HUE_BANDS
+    ]
+
+    # Shape, measured on the region's own outline rather than the frame's.
+    sub = mask[y:y + h, x:x + w]
+    circularity = 0.0
+    solidity = 0.0
+    outlines, _ = cv2.findContours(sub, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if outlines:
+        biggest = max(outlines, key=cv2.contourArea)
+        outline_area = cv2.contourArea(biggest)
+        perimeter = cv2.arcLength(biggest, True)
+        if perimeter > 0:
+            circularity = min(1.0, 4.0 * np.pi * outline_area / (perimeter * perimeter))
+        hull_area = cv2.contourArea(cv2.convexHull(biggest))
+        if hull_area > 0:
+            solidity = min(1.0, outline_area / hull_area)
+    aspect = float(w) / float(h)
+    aspect = min(aspect, 1.0 / aspect)
+    area_frac = float(area) / float(w * h)
+
+    # Texture and brightness, inside the region only.  Whole-frame averages
+    # were the real gap the focus work found (R1/R2/R3): a picture that is
+    # noise everywhere measured as noise everywhere, because nothing was ever
+    # measured where the thing was.
+    laplacian = cv2.Laplacian(roi_gray, cv2.CV_64F)
+    texture = float(np.std(laplacian[region])) / 64.0
+    brightness = float(np.mean(pixels)) / 255.0
+
+    descriptor = list(bands)
+    descriptor.append(float(np.mean(sat)) / 255.0)
+    descriptor.append(float(np.mean(val)) / 255.0)
+    descriptor.extend([circularity, aspect, area_frac, solidity])
+    descriptor.append(texture)
+    descriptor.append(brightness)
+    descriptor.extend(
+        float(np.mean(g[y:y + h, x:x + w][region])) / 255.0 for g in gabors
+    )
+
+    return (float(np.mean(roi_sal[region])) / 255.0, descriptor)
 
 
 class SeeingSystem:
@@ -64,7 +252,13 @@ class SeeingSystem:
         self.objects_recognized = []  # Processed objects
         
         # Learning
-        self.known_objects = {}  # object -> description
+        # Ledger: key -> {first_seen, times_seen, simulation, memory_strength}.
+        # The key is an internal index and nothing else (OPEN-21 C): it holds
+        # no content, it is never placed in `what`, and it means nothing
+        # outside this ledger.  Categories are grown by induction, never
+        # issued a name.
+        self.known_objects = {}
+        self._next_category = 0
         self.visual_memory = {}  # pattern -> memories
         
         # Camera state
@@ -74,18 +268,16 @@ class SeeingSystem:
         # Biological visual processing layers
         self.v1_features = []  # Basic features (V1)
         self.v2_contours = []  # Contours and texture (V2)
-        self.v4_shapes = []  # Color and shape (V4)
-        self.it_objects = []  # Object recognition (IT)
+        self.v4_shapes = []  # Hue and shape (V4)
+        self.it_objects = []  # What the frame holds, as descriptors (IT)
+        # Ledger keys touched by the last induction, in the order the regions
+        # came.  This is the gate's input: not what was seen but which barely
+        # known corner of the ledger it landed in (CAP-7).
+        self.last_induction = []
         
         # Visual attention
         self.attention_map = None  # What we're focusing on
         self.saccades = []  # Eye movements
-
-        # Object recognition (OPEN-10).  Constructing it is free: nothing is
-        # downloaded and no cv2 is imported until the first frame arrives.
-        from .vision_model import Detector
-        self.detector = Detector()
-        self.it_detections = []  # richest form of the last IT output
 
         self._load_state()
         self._check_camera()
@@ -100,6 +292,7 @@ class SeeingSystem:
                     self.visual_acuity = state.get("visual_acuity", 0.2)
                     self.known_objects = state.get("known_objects", {})
                     self.objects_recognized = state.get("objects_recognized", [])
+                    self._next_category = state.get("next_category", 0)
             except:
                 pass
     
@@ -110,6 +303,7 @@ class SeeingSystem:
             "visual_acuity": self.visual_acuity,
             "known_objects": self.known_objects,
             "objects_recognized": self.objects_recognized,
+            "next_category": self._next_category,
             "last_updated": datetime.now().isoformat()
         }
         with open(state_file, "w", encoding="utf-8") as f:
@@ -153,7 +347,9 @@ class SeeingSystem:
         
         # Orientation detection (Gabor-like filters)
         for angle in [0, 45, 90, 135]:
-            kernel = cv2.getGaborKernel((21, 21), 4.0, angle, 10.0, 0.5, 0, ktype=cv2.CV_32F)
+            kernel = cv2.getGaborKernel(
+                (21, 21), 4.0, np.deg2rad(angle), 10.0, 0.5, 0,
+                ktype=cv2.CV_32F)
             filtered = cv2.filter2D(gray, cv2.CV_8UC3, kernel)
             orientation_strength = float(np.mean(filtered)) / 255.0
             features["orientations"].append({"angle": angle, "strength": orientation_strength})
@@ -207,118 +403,141 @@ class SeeingSystem:
     
     def _v4_processing(self, frame, v1_features, v2_contours):
         """
-        V4 Processing: Color and Shape
-        Processes color information and complex shapes
+        V4 Processing: hue and shape, measured rather than named.
+
+        Q1 (2026-10-02) took the words out.  `circle`, `oval`,
+        `large_object`, `irregular` and every colour name were categories
+        from a fixed vocabulary, and a category the bot did not grow is a
+        word however few of them there are.  What is left is measurement:
+        where the frame sits in hue space, and how each contour measures.
         """
         color_shape = {
-            "colors": {},
-            "dominant_color": None,
+            "hue_fractions": _color_fractions(frame),
             "shape_features": []
         }
 
-        # Color detection (like V4 color processing)
-        color_shape["colors"] = _color_fractions(frame)
-        if color_shape["colors"]:
-            color_shape["dominant_color"] = max(
-                color_shape["colors"], key=color_shape["colors"].get)
-
-        # Shape features from V2 contours
         for contour in v2_contours.get("contours", [])[:5]:
-            area = contour["area"]
-            circularity = contour["circularity"]
-            
-            # Categorize shape
-            if circularity > 0.8:
-                shape = "circle"
-            elif circularity > 0.5:
-                shape = "oval"
-            elif area > 5000:
-                shape = "large_object"
-            else:
-                shape = "irregular"
-            
             color_shape["shape_features"].append({
-                "shape": shape,
-                "area": area,
-                "circularity": circularity
+                "area": contour["area"],
+                "circularity": contour["circularity"]
             })
-        
+
         self.v4_shapes = color_shape
         return color_shape
     
     def _it_processing(self, frame, v1_features, v2_contours, v4_shapes):
         """
-        IT Processing: Inferotemporal Cortex
-        Object recognition and memory integration
+        IT Processing: inferotemporal cortex - where a frame becomes what the
+        bot sees, with no word anywhere along the path.
 
-        OPEN-10, the author's answer of 2026-10-01: patch perception quality
-        first and wire the learning up afterwards, one sense at a time, vision
-        first.  "Patched" means IT names what is actually in the frame rather
-        than inferring a name from edge density and the frame's dominant
-        colour.
+        Three things happen here, each answering a different ruling.
 
-        The old version also read names back out of known_objects and appended
-        any whose stored colour matched the frame's dominant colour.  That was
-        circular: an entry could only be in known_objects because IT had named
-        it once, and because the colour was measured over the whole frame,
-        every entry carrying it came back on every frame whether or not the
-        object was still there.  It is gone - known_objects is written from
-        detections and is never read back into recognition.
+        Region proposal (IO-7).  A region is submitted when at least two of
+        three pre-attentive sources hit it: a closed contour, a saturated
+        colour area, and salience above the frame's own ordinary level.
+        Nothing boxes anything - Wolfe-Horowitz L26 sets *important for
+        object recognition* against *guide attention*, so a detector's box
+        would let recognition decide where a category begins.  That is what
+        NanoDet was removed for (OPEN-10 a): it carried not only COCO's
+        words but COCO's boundaries.
+
+        A descriptor per region, as a flat ordered list of floats.  It has
+        no keys, so it has no name: Q1 (2026-10-02) bans natural language
+        from memory itself, and this list is what goes into `what`.
+
+        Online category induction (Barsalou 1999, L1293-1315).  Match the
+        descriptor against every stored simulation; if one is similar
+        enough, join that category and drift its simulation toward the
+        instance that matched.  Otherwise construct a new simulation that
+        matches the descriptor, and that construction establishes
+        membership.  No identifier is ever issued - the judgement is that
+        two representations are similar, not that two numbers are equal.
+
+        `known_objects` is written from this and never read back into
+        recognition: an entry could only exist because it was matched once,
+        so reading it back to decide what is present would be the same
+        question answering itself.
         """
-        detections = self.detector.detect(frame)
-        self.it_detections = detections
+        import cv2
+        import numpy as np
 
-        objects = []
-        if self.detector.available:
-            # One entry per name, strongest first: the label is what gets
-            # stored, so repeating it here would only inflate times_seen.
-            # An empty list is a real answer - the detector ran and the desk
-            # really does hold no person - so the heuristics below must not
-            # get a second vote and invent something it just denied.
-            for detection in sorted(detections, key=lambda d: -d["confidence"]):
-                if detection["label"] not in objects:
-                    objects.append(detection["label"])
-            self.it_objects = objects
-            return objects
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        saliency = _saliency_map(gray)
 
-        # No detector - no cv2, no weights, or no network.  Fall back to the
-        # feature heuristics rather than go blind, and leave the reason in
-        # self.detector.error so a caller can log it instead of guessing.
-        edge_density = v1_features.get("edge_density", 0)
-        shape_complexity = v2_contours.get("shape_complexity", 0)
-        dominant_color = v4_shapes.get("dominant_color")
+        # Orientation, whole-frame once and sliced per region below, so that
+        # every region is measured against the same four channels.
+        gabors = [
+            cv2.filter2D(
+                gray, cv2.CV_8UC3,
+                cv2.getGaborKernel((21, 21), 4.0, np.deg2rad(angle),
+                                   10.0, 0.5, 0, ktype=cv2.CV_32F),
+            )
+            for angle in (0, 45, 90, 135)
+        ]
 
-        if edge_density > 0.1 and shape_complexity > 0.3:
-            objects.append("complex_object")
-        elif dominant_color and v4_shapes["colors"].get(dominant_color, 0) > 0.1:
-            objects.append(f"{dominant_color}_object")
+        described = []
+        for box, component in _propose_regions(gray, hsv, saliency):
+            got = _describe_region(gray, hsv, saliency, component, box, gabors)
+            if got is not None:
+                described.append(got)
 
-        self.it_objects = objects
-        return objects
-    
-    def _object_color(self, label, frame, detections, fallback):
+        # One ordered sequence, order = priority (OPEN-21 A).  "Recognized
+        # first, appearance second" has no pre-attentive counterpart -
+        # nothing here recognizes anything yet - and salience is what picks
+        # first, so what would catch the eye comes first.
+        described.sort(key=lambda item: -item[0])
+        what = [descriptor for _salience, descriptor in described[:MAX_REGIONS]]
+
+        self.last_induction = [self._induct(descriptor) for descriptor in what]
+
+        self.it_objects = what
+        return what
+
+    def _induct(self, descriptor):
         """
-        The colour of one object, not of whatever it happened to be standing in.
+        Barsalou's induction step, verbatim in structure (L1293-1315).
 
-        The ledger used to store the whole frame's dominant colour under each
-        object, so two unrelated things caught in the same view came back
-        sharing a colour - and that shared colour is exactly what the old
-        recognition loop read back to declare them the same object.  A
-        detection gives us a box, so we can simply look at the box.
+        Returns the key of the category the descriptor joined.  The key is
+        an internal index and nothing else: it holds no content, is never
+        put into `what`, and means nothing outside this ledger - which is
+        exactly what an episodic index is (OPEN-21 C, Quest L10).
         """
-        for detection in detections:
-            if detection.get("label") != label:
+        best_key = None
+        best_sim = 0.0
+        for key, entry in self.known_objects.items():
+            simulation = entry.get("simulation") or []
+            if len(simulation) != len(descriptor):
                 continue
-            x1, y1, x2, y2 = (int(round(v)) for v in detection["box"])
-            crop = frame[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
-            fractions = _color_fractions(crop) if crop.size else {}
-            if fractions:
-                return max(fractions, key=fractions.get)
-            # Clearly seen, but it carries no named colour of its own.
-            return None
-        # Heuristic labels have no box: they came out of the frame, so the
-        # frame's colour is the only one they can honestly be given.
-        return fallback
+            sim = _similarity(descriptor, simulation)
+            if sim > best_sim:
+                best_sim = sim
+                best_key = key
+
+        if best_key is not None and best_sim >= INDUCTION_TAU:
+            entry = self.known_objects[best_key]
+            simulation = entry.get("simulation") or descriptor
+            entry["simulation"] = [
+                (1.0 - INDUCTION_ALPHA) * old + INDUCTION_ALPHA * new
+                for old, new in zip(simulation, descriptor)
+            ]
+            entry["times_seen"] = entry.get("times_seen", 0) + 1
+            entry["memory_strength"] = min(
+                1.0, entry.get("memory_strength", 0.5) + 0.05)
+            return best_key
+
+        key = str(self._next_category)
+        while key in self.known_objects:
+            self._next_category += 1
+            key = str(self._next_category)
+        self._next_category += 1
+        self.known_objects[key] = {
+            "first_seen": datetime.now().isoformat(),
+            "times_seen": 1,
+            "simulation": list(descriptor),
+            "memory_strength": 0.5,
+        }
+        return key
 
     def _visual_attention(self, frame, features):
         """
@@ -330,9 +549,9 @@ class SeeingSystem:
         
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Saliency map (simple center-surround)
-        blurred = cv2.GaussianBlur(gray, (21, 21), 0)
-        saliency = cv2.absdiff(gray, blurred)
+        # The very map region proposal used, so attention and perception look
+        # at one map instead of two that merely resemble each other.
+        saliency = _saliency_map(gray)
         
         # Find most salient region
         _, max_val, _, max_loc = cv2.minMaxLoc(saliency)
@@ -385,30 +604,9 @@ class SeeingSystem:
         self.things_seen.append(observation)
         self.last_capture = observation
 
-        # Learn from what was seen using IT processing
-        if analysis:
-            detections = analysis.get("detections", [])
-            frame_color = analysis.get("v4_shapes", {}).get("dominant_color")
-            for obj in analysis.get("it_objects", []):
-                if obj not in self.known_objects:
-                    self.known_objects[obj] = {
-                        "first_seen": datetime.now().isoformat(),
-                        "times_seen": 1,
-                        "dominant_color": self._object_color(
-                            obj, frame, detections, frame_color),
-                        "features": {
-                            "brightness": analysis.get("v1_features", {}).get("brightness", 0),
-                            "edge_density": analysis.get("v1_features", {}).get("edge_density", 0),
-                            "shape_complexity": analysis.get("v2_contours", {}).get("shape_complexity", 0)
-                        }
-                    }
-                else:
-                    self.known_objects[obj]["times_seen"] += 1
-                    # Strengthen memory with each viewing (Hebbian learning)
-                    if "memory_strength" not in self.known_objects[obj]:
-                        self.known_objects[obj]["memory_strength"] = 0.5
-                    self.known_objects[obj]["memory_strength"] = min(1.0,
-                        self.known_objects[obj]["memory_strength"] + 0.05)
+        # The ledger is already written: induction ran inside IT, while the
+        # region still had its own descriptor in hand to be matched against.
+        # Doing it again here would turn one observation into two memories.
 
         # Improve vision with use
         self.visual_acuity = min(1.0, self.visual_acuity + 0.001)
@@ -440,8 +638,12 @@ class SeeingSystem:
 
     def _analyze_frame(self, frame):
         """
-        Analyze a camera frame using biological visual processing pipeline.
-        Processes through V1 -> V2 -> V4 -> IT like the human brain.
+        Turn one frame into measurements: V1 -> V2 -> V4 -> IT.
+
+        Everything here is momentary.  Q1 kept raw numbers where they belong
+        - in the analysis and in the sensory ledger, never in memory - so
+        `what` is the only thing that leaves this function for memory to
+        see, and it is a list of numbers with no key in it.
         """
         # V1: Basic features (edges, orientation, contrast)
         v1_features = self._v1_processing(frame)
@@ -449,29 +651,25 @@ class SeeingSystem:
         # V2: Contours and texture
         v2_contours = self._v2_processing(frame, v1_features)
         
-        # V4: Color and shape
+        # V4: Hue and shape, measured
         v4_shapes = self._v4_processing(frame, v1_features, v2_contours)
         
-        # IT: Object recognition
-        it_objects = self._it_processing(frame, v1_features, v2_contours, v4_shapes)
+        # IT last: it proposes the regions, describes them, and runs
+        # induction, so every measurement above is already in hand by then.
+        what = self._it_processing(frame, v1_features, v2_contours, v4_shapes)
         
         # Visual attention
         attention = self._visual_attention(frame, v1_features)
         
-        analysis = {
+        return {
             "v1_features": v1_features,
             "v2_contours": v2_contours,
             "v4_shapes": v4_shapes,
-            "it_objects": it_objects,
-            "detections": list(self.it_detections),
+            "what": what,
             "attention": attention,
-            "objects": it_objects,
-            "colors": list(v4_shapes.get("colors", {}).keys()),
             "brightness": v1_features.get("brightness", 0),
             "movement": False
         }
-        
-        return analysis
     
     def see_screenshot(self, screenshot_path):
         """

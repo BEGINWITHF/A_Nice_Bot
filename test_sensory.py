@@ -47,10 +47,8 @@ def run_demo():
             print("   I see through camera")
             if result.get("analysis"):
                 analysis = result["analysis"]
-                if analysis.get("colors"):
-                    print("   Colors:", ", ".join(analysis["colors"]))
-                if analysis.get("objects"):
-                    print("   Objects:", ", ".join(analysis["objects"]))
+                if analysis.get("what"):
+                    print("   Regions described:", len(analysis["what"]))
     else:
         print("   Camera not available (need OpenCV)")
     print()
@@ -65,13 +63,12 @@ def run_demo():
     print("   Camera:", "available" if stats["seeing"]["camera_available"] else "not available")
     print()
 
-    # Brain processing
-    print("4. BRAIN PROCESSING:")
-    brain.learn_word("hello")
-    brain.learn_word("world")
-    brain.internal_process("hello world")
-    print("   I learned: hello, world")
-    print("   (Internal processing - no text output)")
+    # Learning - note what is NOT here: no vocabulary, because DATA-7 read A
+    # says memory holds no natural language and a person keeps no word list
+    print("4. LEARNING:")
+    brain.learn_pattern([0, 3, 3])
+    print("   patterns learned:", len(brain.patterns))
+    print("   (no text output)")
     print()
 
     print("=== Test Complete ===")
@@ -93,14 +90,19 @@ def test_sensory_smoke(tmp_path, monkeypatch):
     assert stats["sensory_load"] > 0.0
     assert stats["seeing"]["camera_available"] is False
 
-    # vocabulary starts at 4 special tokens, then learns two words
-    brain.learn_word("hello")
-    brain.learn_word("world")
-    brain.internal_process("hello world")
-    assert brain.vocabulary_size == 6
-    # counted twice: once explicitly, once again through internal_process
-    assert brain.word_frequency["hello"] == 2
-    assert brain.word_frequency["world"] == 2
+    # DATA-7 read A: a person keeps no word list, so neither does this.
+    # Nothing may exist that is keyed by a word.
+    assert not hasattr(brain, "word_to_index")
+    assert not hasattr(brain, "index_to_word")
+    assert not hasattr(brain, "word_frequency")
+    assert not hasattr(brain, "vocabulary_size")
+    assert not hasattr(brain, "concepts")
+    assert not hasattr(brain, "meaning_network")
+    assert not hasattr(brain, "prediction_network")
+
+    # what is left still works: sequential pattern learning
+    brain.learn_pattern([0, 1, 2])
+    assert brain.get_stats()["patterns_learned"] == 2
 
 
 if __name__ == "__main__":
