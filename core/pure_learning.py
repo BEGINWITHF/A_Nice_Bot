@@ -51,9 +51,9 @@ class PureLearningSystem:
         yes   emotion, personality, preference and social state - HumanLike
               System, already stripped of its text store by OPEN-19
 
-    `core/pure_network.py` is left in place: it is language-free machinery,
-    and STEP-2's job is to point a network at perception. Nothing here
-    instantiates it until there is something to point it at.
+    `core/pure_network.py` is gone with them rather than kept empty: nothing
+    referenced it, and a network belongs to the day STEP-2 has perception to
+    point one at (OPEN-9 - the old no longer matches the present, so it goes).
     """
 
     def __init__(self, data_dir="data/pure"):

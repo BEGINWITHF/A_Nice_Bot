@@ -1,6 +1,6 @@
 # Core runtime - enough to run `python main.py`.
-# Nothing here is a language model: the network itself lives in
-# core/pure_network.py and is plain Python.
+# Nothing here is a language model, and nothing at all is fetched from
+# outside: there is no chat model and no weights in this repository.
 numpy
 opencv-python
 pyaudio
