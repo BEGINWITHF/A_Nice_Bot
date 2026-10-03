@@ -58,19 +58,52 @@ INDUCTION_TAU = 0.85
 INDUCTION_ALPHA = 0.10
 
 # Focus - R1/R2/R3, Diary/articles/2026-10-02-focus-and-fidelity.md section 5.
+# Where every number below came from: parameter-values section 11 (2026-10-03).
 #
 # R2: how far the salience admission bar drops while attention is held on one
 # place.  Reynolds & Heeger 2009 L38 reports a *reduction in contrast
 # threshold* under attention, largest at intermediate contrast - that is the
 # shape; it gives no number for a bar this map does not have.
-# # ASSUMPTION: this fraction is ours.
-FOCUS_THRESHOLD_RELAXATION = 0.5
+# SOURCE: Carrasco (2011), *Visual attention: the past 25 years*,
+#               Vision Res 51(13):1484-1525 - "For a cell to reliably detect
+#               an unattended stimulus, its contrast needed to be 50% higher
+#               than that of the attended stimulus; i.e., attention was
+#               equivalent to about 50% increase in contrast" (Reynolds et
+#               al. 2000 in V1; same order in MT and V4).  An unattended
+#               cell wants 1.5x, so the attended one runs at 1/1.5: the
+#               relaxation is 1 - 1/1.5 = 0.333, rounded here to 0.33.
+# SWAP:       the behavioural end of the same literature is smaller -
+#               Jigo & Carrasco (2020), J Vis 20(11), a 15% gain in
+#               sensitivity, which would be 0.13 - and this bar is a
+#               salience admission line rather than a contrast threshold,
+#               so the two are not the same yardstick.  0.33 was taken on
+#               the author's word, 2026-10-03; it had been 0.5 (a halving,
+#               above every measurement taken) before that.
+FOCUS_THRESHOLD_RELAXATION = 0.33   # 1 - 1/1.5, from Reynolds et al. 2000
 
 # Attention counts as held once it has stayed put, and is released when it
-# moves.  The rates and the tolerance for movement are ours: none of Bays
-# 2009, Reynolds & Heeger 2009 or Myers 2014 measured how long attention has
-# to hold before it counts as focused on one thing.
-# # ASSUMPTION: all three numbers below.
+# moves.
+# SOURCE: Dugué, Merriam, Heeger & Carrasco (2020), *Differential impact of
+#               endogenous and exogenous attention on activity in human
+#               visual cortex*, Sci Rep 10:21274 - "endogenous takes about
+#               300 ms to be deployed and can be sustained at will whereas
+#               exogenous attention takes only about 100 ms to be deployed
+#               and it is transient".  Müller & Rabbitt (1989), JEP:HPP
+#               15:710-726 agree: peripheral cues peak within 150 ms and
+#               decline between 150 and 300 ms.
+# # ASSUMPTION: all three numbers below.  Ours run 1.5 s down to 0.75 s -
+#               the same order and the same ordering as the measurements
+#               (holding slower than releasing, 2:1 against their 3:1), but
+#               longer in absolute terms: these time the build and decay of
+#               a hold carried across frames, not a cue's latency.  That
+#               correspondence is ours, not theirs.
+#               The third one - how far the peak may travel and still count
+#               as the same hold - is measured against Eriksen & Hoffman
+#               (1973), Percept Psychophys 14(1):155-160, who put the
+#               smallest attentional focus at about one degree of visual
+#               angle.  0.02 of a typical camera's frame diagonal is close
+#               to that, but the code never learns the field of view, so
+#               degrees-to-pixels is an assumption on top of an assumption.
 FOCUS_HOLD_TAU_S = 1.5
 FOCUS_RELEASE_TAU_S = 0.75
 FOCUS_HOLD_RADIUS = 0.02      # fraction of the frame diagonal

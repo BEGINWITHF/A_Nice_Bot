@@ -178,24 +178,47 @@ WINDOW_S = 30.0
 # was an absolute distance against the first frame frozen at event start,
 # which is neither of those - and no person segments events that way.
 #
-# # ASSUMPTION: the literature gives the shape of this rule and not one of its
-#               numbers.  All three below are ours.
+# The shape of that rule is the literature's.  None of the three numbers is,
+# and a search on 2026-10-03 found no published value for any of them -
+# recorded in parameter-values section 10, with the search left visible.
 #
 # EVENT_MODEL_TAU_S: how readily the model follows the input.  Short enough
 #               that a slow drift is caught up with (and therefore never
 #               cuts) and long enough that one noisy frame cannot redefine
 #               what is going on.
+# SOURCE:       the parameter exists under this exact name.  Zacks (2020),
+#               "Event perception and memory", local copy
+#               papers/2020-Zacks-Event-Perception-and-Memory.txt:1103 -
+#               "segmentation on different timescales can be achieved by
+#               varying the time constant of integration of the prediction
+#               error signal: Longer time constants do more smoothing ...
+#               and produce less frequent event model updating".  So EST has
+#               this dial, and it turns the way the lines below say it does.
+# # ASSUMPTION: the 5.0.  Identity sourced, magnitude not.  The one
+#               constraint we can honestly impose is that tau sits well
+#               under the event window - WINDOW_S = 30 has four sources
+#               (parameter-values section 8) - so the model converges
+#               inside a single event; 5 s is a sixth of the window, and
+#               the one-in-six is ours.
 # SWAP:       raise it for a stubborn model, lower it for a skittish one.
 EVENT_MODEL_TAU_S = 5.0
 
 # SHOCK_RATIO: how far above its own baseline an error must sit to count as a
 #               transient increase rather than this event's usual amount of
 #               being wrong.
+# # ASSUMPTION: the 2.0.  Searched 2026-10-03 for a published multiple in
+#               the event-segmentation modelling literature; those papers
+#               write "beyond a threshold" and never say how far beyond.
+#               Search trail in parameter-values section 10.
 # SWAP:       raise it for coarser events, lower it for finer ones.
 SHOCK_RATIO = 2.0
 
 # SHOCK_FLOOR: below this an error is not a signal at all - without it a
 #               baseline sitting near zero would make any wobble a shock.
+# # ASSUMPTION: the 0.10.  Nothing was found, and this one is the least
+#               likely to turn up a source: it is a floor on an error
+#               vector, not a perceptual threshold anyone measures.
+#               Parameter-values section 10.
 # SWAP:       raise it in a noisy room.
 SHOCK_FLOOR = 0.10
 
