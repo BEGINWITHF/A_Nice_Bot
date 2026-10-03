@@ -4,6 +4,7 @@ The AI sees the world through a camera like human eyes
 """
 
 import json
+import math
 import os
 from datetime import datetime
 
@@ -56,6 +57,24 @@ MIN_REGION_AREA = 200
 INDUCTION_TAU = 0.85
 INDUCTION_ALPHA = 0.10
 
+# Focus - R1/R2/R3, Diary/articles/2026-10-02-focus-and-fidelity.md section 5.
+#
+# R2: how far the salience admission bar drops while attention is held on one
+# place.  Reynolds & Heeger 2009 L38 reports a *reduction in contrast
+# threshold* under attention, largest at intermediate contrast - that is the
+# shape; it gives no number for a bar this map does not have.
+# # ASSUMPTION: this fraction is ours.
+FOCUS_THRESHOLD_RELAXATION = 0.5
+
+# Attention counts as held once it has stayed put, and is released when it
+# moves.  The rates and the tolerance for movement are ours: none of Bays
+# 2009, Reynolds & Heeger 2009 or Myers 2014 measured how long attention has
+# to hold before it counts as focused on one thing.
+# # ASSUMPTION: all three numbers below.
+FOCUS_HOLD_TAU_S = 1.5
+FOCUS_RELEASE_TAU_S = 0.75
+FOCUS_HOLD_RADIUS = 0.02      # fraction of the frame diagonal
+
 
 def _saliency_map(gray):
     """Bottom-up salience: how far each pixel sits from its own surround."""
@@ -80,7 +99,7 @@ def _similarity(a, b):
     return 1.0 - sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
-def _propose_regions(gray, hsv, saliency):
+def _propose_regions(gray, hsv, saliency, focus):
     """
     Offer the regions of a frame, with no box anywhere in the path.
 
@@ -97,6 +116,11 @@ def _propose_regions(gray, hsv, saliency):
     object recognition* against *guide attention*, so a detector's box would
     be letting recognition, not attention, decide where a region starts.
     That is what NanoDet was removed for (OPEN-10 a).
+
+    `focus` only moves the third bar (R2, Reynolds & Heeger 2009 L38:
+    attention is a *reduction in contrast threshold*).  The corroboration
+    rule itself never relaxes - IO-7 stands whether or not attention is
+    holding, so a source still may not propose alone.
 
     Returns [(box, mask)], box = (x, y, w, h), mask = the candidate's own
     binary mask cropped to that box.
@@ -116,10 +140,15 @@ def _propose_regions(gray, hsv, saliency):
     for lo, hi in COLOR_HUE_BANDS:
         mask_colour |= cv2.inRange(hsv, np.array(lo), np.array(hi))
 
-    # Above the map's own mean.  The baseline is taken from the frame itself
-    # rather than from a tuned constant - the same idea the event model uses
-    # when it asks whether an error is high *for it* (OPEN-21 point B).
-    mask_salient = (saliency >= float(np.mean(saliency))).astype(np.uint8) * 255
+    # Above the map's own mean - the baseline comes from the frame itself
+    # rather than from a tuned constant, the same idea the event model uses
+    # when it asks whether an error is high *for it* (OPEN-21 point B) -
+    # and lower still while attention is held, because R2 is that threshold
+    # falling.  What it buys is exactly the noisy frame: a weak region that
+    # would have died below the ordinary level is admitted at the moment
+    # something is being looked at.
+    bar = float(np.mean(saliency)) * (1.0 - FOCUS_THRESHOLD_RELAXATION * focus)
+    mask_salient = (saliency >= bar).astype(np.uint8) * 255
 
     seed = mask_bound if np.any(mask_bound) else mask_colour
     if not np.any(seed):
@@ -145,7 +174,37 @@ def _propose_regions(gray, hsv, saliency):
     return regions
 
 
-def _describe_region(gray, hsv, saliency, mask, box, gabors):
+def _attended_region(regions, saliency, center):
+    """
+    Which proposed region attention is on.
+
+    The obvious answer is the one containing the map's peak.  When the peak
+    fell between regions - common in a frame that is mostly noise - attention
+    still lands on a thing rather than on the background, so the fallback is
+    the region carrying the most salience.
+
+    Returns an index into `regions`; `regions` is never empty here.
+    """
+    import numpy as np
+
+    if center is not None:
+        cx, cy = int(center[0]), int(center[1])
+        for index, (box, _component) in enumerate(regions):
+            x, y, w, h, _area = box
+            if x <= cx < x + w and y <= cy < y + h:
+                return index
+
+    def mass(entry):
+        box, component = entry
+        x, y, w, h, _area = box
+        roi = saliency[y:y + h, x:x + w]
+        inside = component > 0
+        return float(np.sum(roi[inside])) if np.any(inside) else 0.0
+
+    return max(range(len(regions)), key=lambda i: mass(regions[i]))
+
+
+def _describe_region(gray, hsv, saliency, mask, box, gabors, precision=0.0):
     """
     One region as a flat, ordered list of floats.
 
@@ -153,6 +212,11 @@ def _describe_region(gray, hsv, saliency, mask, box, gabors):
     natural language to memory itself, and this list is exactly what goes
     into `what`.  The meaning of each position lives here, in code, and is
     never written down - so there is no key to translate into a word later.
+
+    `precision` is how much of this measurement is taken from the part of the
+    region actually carrying the signal rather than from everything the
+    region happens to contain (R1).  At 0 every weight below is 1 and every
+    number comes out exactly as an unfocused frame produces it.
 
     Returns (salience, descriptor), or None when the region cannot be
     described at all.
@@ -176,14 +240,36 @@ def _describe_region(gray, hsv, saliency, mask, box, gabors):
     hue = hsv_pixels[:, 0].astype(np.int32)
     sat = hsv_pixels[:, 1]
     val = hsv_pixels[:, 2]
-    count = float(pixels.size)
+
+    # R1: how far the measurement leans on the region's own most salient
+    # pixels.  0 samples the region as an even whole - today's numbers, and
+    # what an unfocused frame still gets.  1 lets a pixel count for its
+    # share of the region's salience, so the part of it that is standing out
+    # speaks for the rest and the quiet surround stops diluting it.
+    #
+    # Only the scalar measurements are weighted.  The outline is never
+    # touched: focus changes how the inside of a region is sampled, not
+    # where the region ends, and the boundary was already decided by
+    # pre-attentive contour back in proposal (IO-7).
+    sal_core = roi_sal[region].astype(np.float64)
+    mean_core = float(np.mean(sal_core)) if sal_core.size else 0.0
+    weight = np.maximum(
+        0.0,
+        (1.0 - precision) + precision * sal_core / max(mean_core, 1e-6),
+    )
+    count = float(np.sum(weight))
+    if count <= 0.0:
+        weight = np.ones_like(sal_core)
+        count = float(weight.size)
+    if count <= 0.0:
+        return None
 
     # Colour: what share of this region falls in each unnamed hue band, plus
     # its mean saturation and value.  Saturation and value are kept out of
     # the bands so that a desaturated region still reads as something.
     saturated = (sat >= 50) & (val >= 50)
     bands = [
-        float(np.count_nonzero((hue >= lo[0]) & (hue <= hi[0]) & saturated)) / count
+        float(np.sum(weight[(hue >= lo[0]) & (hue <= hi[0]) & saturated])) / count
         for lo, hi in COLOR_HUE_BANDS
     ]
 
@@ -208,20 +294,30 @@ def _describe_region(gray, hsv, saliency, mask, box, gabors):
     # Texture and brightness, inside the region only.  Whole-frame averages
     # were the real gap the focus work found (R1/R2/R3): a picture that is
     # noise everywhere measured as noise everywhere, because nothing was ever
-    # measured where the thing was.
+    # measured where the thing was.  This is the rest of that fix: measure
+    # where the signal is, weighted by how much of it this act of attention
+    # is actually holding.
     laplacian = cv2.Laplacian(roi_gray, cv2.CV_64F)
-    texture = float(np.std(laplacian[region])) / 64.0
-    brightness = float(np.mean(pixels)) / 255.0
+    lap_region = laplacian[region]
+    lap_mean = float(np.sum(weight * lap_region) / count)
+    texture = float(np.sqrt(
+        np.sum(weight * (lap_region - lap_mean) ** 2) / count)) / 64.0
+    brightness = float(np.sum(weight * pixels) / count) / 255.0
 
     descriptor = list(bands)
-    descriptor.append(float(np.mean(sat)) / 255.0)
-    descriptor.append(float(np.mean(val)) / 255.0)
+    descriptor.append(float(np.sum(weight * sat) / count) / 255.0)
+    descriptor.append(float(np.sum(weight * val) / count) / 255.0)
     descriptor.extend([circularity, aspect, area_frac, solidity])
     descriptor.append(texture)
     descriptor.append(brightness)
-    descriptor.extend(
-        float(np.mean(g[y:y + h, x:x + w][region])) / 255.0 for g in gabors
-    )
+    for g in gabors:
+        sample = g[y:y + h, x:x + w][region]
+        if sample.ndim == 1:
+            value = float(np.sum(weight * sample) / count)
+        else:
+            value = float(np.sum(weight[:, None] * sample)
+                          / (count * sample.shape[1]))
+        descriptor.append(value / 255.0)
 
     return (float(np.mean(roi_sal[region])) / 255.0, descriptor)
 
@@ -245,7 +341,11 @@ class SeeingSystem:
         
         # Seeing state
         self.visual_acuity = 0.2  # 0=blind, 1=perfect vision
-        self.focus_level = 0.5  # 0=distracted, 1=focused
+        # Recomputed every frame from where attention has been holding, so
+        # there is no standing value to load and none to set by hand.  It is
+        # not written to disk either: a frame's focus belongs to that act of
+        # encoding and nowhere else (R3).
+        self.focus_level = 0.0  # 0=distributed, 1=held on one thing
         
         # What has been seen
         self.things_seen = []  # Visual observations
@@ -278,6 +378,8 @@ class SeeingSystem:
         # Visual attention
         self.attention_map = None  # What we're focusing on
         self.saccades = []  # Eye movements
+        self._attention_center = None  # where attention sat last frame
+        self._attention_at = None      # and when
 
         self._load_state()
         self._check_camera()
@@ -425,12 +527,12 @@ class SeeingSystem:
         self.v4_shapes = color_shape
         return color_shape
     
-    def _it_processing(self, frame, v1_features, v2_contours, v4_shapes):
+    def _it_processing(self, gray, hsv, saliency, v1_features, v2_contours, v4_shapes):
         """
         IT Processing: inferotemporal cortex - where a frame becomes what the
         bot sees, with no word anywhere along the path.
 
-        Three things happen here, each answering a different ruling.
+        Four things happen here, each answering a different ruling.
 
         Region proposal (IO-7).  A region is submitted when at least two of
         three pre-attentive sources hit it: a closed contour, a saturated
@@ -444,6 +546,14 @@ class SeeingSystem:
         A descriptor per region, as a flat ordered list of floats.  It has
         no keys, so it has no name: Q1 (2026-10-02) bans natural language
         from memory itself, and this list is what goes into `what`.
+
+        Attention (R1/R2/R3).  `focus_level` and `attention_map` were both
+        present and neither decided anything; they now pick which region is
+        on the spot, how far its measurement leans on its own strongest
+        pixels, and how far the admission bar drops for the frame.  R3 is
+        what this does *not* do: focus never reaches back into a record
+        already written - induction drifts a simulation exactly the same
+        amount whether or not attention was holding.
 
         Online category induction (Barsalou 1999, L1293-1315).  Match the
         descriptor against every stored simulation; if one is similar
@@ -461,10 +571,6 @@ class SeeingSystem:
         import cv2
         import numpy as np
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        saliency = _saliency_map(gray)
-
         # Orientation, whole-frame once and sliced per region below, so that
         # every region is measured against the same four channels.
         gabors = [
@@ -476,9 +582,23 @@ class SeeingSystem:
             for angle in (0, 45, 90, 135)
         ]
 
+        regions = _propose_regions(gray, hsv, saliency,
+                                   float(self.focus_level))
+        if not regions:
+            self.last_induction = []
+            self.it_objects = []
+            return []
+
+        # One region is on the spot; the rest are measured as they always
+        # were, because attention is a spotlight and not a wash.
+        center = (self.attention_map or {}).get("center")
+        attended = _attended_region(regions, saliency, center)
+
         described = []
-        for box, component in _propose_regions(gray, hsv, saliency):
-            got = _describe_region(gray, hsv, saliency, component, box, gabors)
+        for index, (box, component) in enumerate(regions):
+            precision = float(self.focus_level) if index == attended else 0.0
+            got = _describe_region(gray, hsv, saliency, component, box,
+                                   gabors, precision)
             if got is not None:
                 described.append(got)
 
@@ -539,41 +659,66 @@ class SeeingSystem:
         }
         return key
 
-    def _visual_attention(self, frame, features):
+    def _visual_attention(self, saliency, now):
         """
-        Visual Attention Mechanism
-        Focus on important parts of the scene
+        Where attention is, and how long it has been there.
+
+        This used to be computed after IT had already described the frame -
+        attention arriving after the measuring cannot guide it - and from a
+        second copy of a map region proposal had computed for itself.  It now
+        runs first, on the very map the regions are proposed from, and it
+        decides two things: `attention_map` says *where*, `focus_level` says
+        *whether it has stayed there*.
+
+        Focus is a hold, not a reading of the picture.  The author's rule
+        was that a bot focused on one thing can remember a very noisy frame,
+        and a focus read off the frame's own salience would be lowest exactly
+        when the frame is noisy - so focus tracks attention staying put
+        instead, and rises only while the peak does not move off it.
+
+        Guidance stays pre-attentive all the way down: the map is a
+        surround difference, it carries no category and cannot name anything
+        (IO-7).
         """
         import cv2
-        import numpy as np
-        
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # The very map region proposal used, so attention and perception look
-        # at one map instead of two that merely resemble each other.
-        saliency = _saliency_map(gray)
-        
-        # Find most salient region
-        _, max_val, _, max_loc = cv2.minMaxLoc(saliency)
-        
-        # Update attention
+
+        _peak, strength, _floor, center = cv2.minMaxLoc(saliency)
+        previous = self._attention_center
+        last = self._attention_at
+
         self.attention_map = {
-            "center": max_loc,
-            "strength": float(max_val) / 255.0,
-            "timestamp": datetime.now().isoformat()
+            "center": center,
+            "strength": float(strength) / 255.0,
+            "timestamp": now.isoformat(timespec="seconds"),
         }
-        
+
         # Record saccade (eye movement)
         self.saccades.append({
-            "from": self.saccades[-1]["to"] if self.saccades else (0, 0),
-            "to": max_loc,
-            "timestamp": datetime.now().isoformat()
+            "from": previous if previous is not None else (0, 0),
+            "to": center,
+            "timestamp": now.isoformat(timespec="seconds"),
         })
-        
-        # Keep only recent saccades
         if len(self.saccades) > 50:
             self.saccades = self.saccades[-50:]
-        
+
+        diagonal = math.hypot(saliency.shape[1], saliency.shape[0])
+        tolerance = FOCUS_HOLD_RADIUS * max(diagonal, 1.0)
+        holding = False
+        if previous is not None and last is not None:
+            moved = math.hypot(center[0] - previous[0], center[1] - previous[1])
+            holding = moved <= tolerance
+
+        # R1 and R2 both read this: an exact exponential over real time, so
+        # the value means the same thing at any frame rate.
+        dt = 0.0 if last is None else max(0.0, (now - last).total_seconds())
+        tau = FOCUS_HOLD_TAU_S if holding else FOCUS_RELEASE_TAU_S
+        alpha = 1.0 - math.exp(-dt / max(tau, 1e-9))
+        target = 1.0 if holding else 0.0
+        self.focus_level = max(0.0, min(
+            1.0, self.focus_level + alpha * (target - self.focus_level)))
+
+        self._attention_center = center
+        self._attention_at = now
         return self.attention_map
     
     def see_frame(self, frame, source="camera"):
@@ -638,29 +783,41 @@ class SeeingSystem:
 
     def _analyze_frame(self, frame):
         """
-        Turn one frame into measurements: V1 -> V2 -> V4 -> IT.
+        Turn one frame into measurements: attention, then V1 -> V2 -> V4 -> IT.
+
+        Attention comes first now and the map is computed once, because it
+        used to run after IT - by which point every region had already been
+        described and there was nothing left for it to guide.
 
         Everything here is momentary.  Q1 kept raw numbers where they belong
         - in the analysis and in the sensory ledger, never in memory - so
         `what` is the only thing that leaves this function for memory to
         see, and it is a list of numbers with no key in it.
         """
+        import cv2
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        saliency = _saliency_map(gray)
+
+        # Attention first: it decides which region is on the spot, and IT
+        # below measures on those terms.  One map, two uses, computed once.
+        attention = self._visual_attention(saliency, datetime.now())
+
         # V1: Basic features (edges, orientation, contrast)
         v1_features = self._v1_processing(frame)
-        
+
         # V2: Contours and texture
         v2_contours = self._v2_processing(frame, v1_features)
-        
+
         # V4: Hue and shape, measured
         v4_shapes = self._v4_processing(frame, v1_features, v2_contours)
-        
+
         # IT last: it proposes the regions, describes them, and runs
         # induction, so every measurement above is already in hand by then.
-        what = self._it_processing(frame, v1_features, v2_contours, v4_shapes)
-        
-        # Visual attention
-        attention = self._visual_attention(frame, v1_features)
-        
+        what = self._it_processing(gray, hsv, saliency,
+                                   v1_features, v2_contours, v4_shapes)
+
         return {
             "v1_features": v1_features,
             "v2_contours": v2_contours,
@@ -686,11 +843,6 @@ class SeeingSystem:
         self._save_state()
         
         return observation
-    
-    def set_focus(self, level):
-        """Set focus level (0=distracted, 1=focused)"""
-        self.focus_level = max(0.0, min(1.0, level))
-        self._save_state()
     
     def get_stats(self):
         """Get seeing statistics"""
