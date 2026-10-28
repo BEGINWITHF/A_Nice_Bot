@@ -127,11 +127,19 @@ class HostIngest:
         if volume <= SILENCE_FLOOR:
             return {"channel": "sound", "recorded": False, "silence": True}
 
-        self.senses.hear_sound("sound", volume=volume)
+        # OPEN-22: the same ear the local loop uses, behind the same gate.
+        # A device ships PCM and hears nothing (CAP-7); the host is what
+        # hears it, so the streams, the four descriptors and the category
+        # index are all decided here - and none of them cross back.
+        rate = int(meta.get("sample_rate") or 44100)
+        sensed = self.senses.hearing.hear_samples(samples, rate)
+        what = (sensed or {}).get("what") or []
 
         entry = self.pipeline.record(
             "hearing",
-            {"volume_band": int(volume * 20)},
+            {"what": what},
             salience=audio_salience(volume),
         )
+        if self.learn is not None:
+            self.learn(entry, self.senses.hearing.last_induction)
         return {"channel": "sound", "recorded": entry is not None}

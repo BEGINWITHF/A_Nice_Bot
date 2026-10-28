@@ -177,16 +177,25 @@ def sense_once(camera, mic):
         if mic.available:
             sound = mic.listen(duration=1)
             if sound and sound["volume"] > SILENCE_FLOOR:  # above room tone
-                # Process through sensory system
-                result = senses.hear_sound("sound", volume=sound["volume"])
-
-                # Salience gate: room tone is not a memory, a loud sound is
+                # OPEN-22: hear the samples, not a volume number.  The old
+                # line handed `hear_sound("sound")` a constant string that
+                # was never audio, and wrote {"volume_band": ...} - one
+                # integer with no symbol in it, which neither DATA-5 nor any
+                # learning system could use.  The path is left in place for
+                # IO-6 to settle; nothing in the loop calls it now.
                 volume = sound["volume"]
-                pipeline.record(
+                sensed = senses.hearing.hear_samples(
+                    sound.get("data"), getattr(mic, "rate", 44100))
+                what = (sensed or {}).get("what") or []
+
+                # One gate for both senses and one rule behind it:
+                # memorise first, learn only from what was memorised.
+                entry = pipeline.record(
                     "hearing",
-                    {"volume_band": int(volume * 20)},
+                    {"what": what},
                     salience=audio_salience(volume),
                 )
+                brain.learn_from(entry, senses.hearing.last_induction)
 
         # 3. SLEEP WHEN DUE - one pass, never blocks the sensing loop.
         # OPEN-12: `due()` is Process S crossing a circadian-modulated

@@ -403,8 +403,17 @@ def test_a_loud_remote_sample_is_memorised(host):
 
     assert result["recorded"] is True
     assert [kind for kind, _, _ in host.spy] == ["hearing"]
-    # A "half volume" sample reads 16383/32768, so it lands in band 9.
-    assert host.spy[0][1] == {"volume_band": 9}
+    # What memory is handed is the perceptual representation and not a
+    # volume number: OPEN-22 D8 gives hearing the same `what` vision has -
+    # a flat list of floats with no name anywhere in it.  A DC test signal
+    # sits in the lowest cochlear band, so its pitch term is 0.
+    assert sorted(host.spy[0][1]) == ["what"]
+    descriptors = host.spy[0][1]["what"]
+    assert descriptors, "a loud sample must describe at least one stream"
+    for descriptor in descriptors:
+        assert len(descriptor) == 4
+        for value in descriptor:
+            assert 0.0 <= value <= 1.0
     assert host.spy[0][2] == pytest.approx(1.0)
 
 

@@ -15,6 +15,80 @@ import os
 import math
 from datetime import datetime
 
+from core import categories
+
+# ---------------------------------------------------------------------------
+# OPEN-22: from PCM to a `what`  -  Diary/articles/2026-10-28-hearing-design.md
+# ---------------------------------------------------------------------------
+#
+# D1 hearing segregates into streams instead of only noticing change:
+# Sussman 2017 L51 - "stream segregation occurs automatically and sets the
+# basis for auditory event formation"; Calcus 2024 L37 - the mechanisms are
+# "functional from birth", and L16 - newborns parse with "the same cues
+# adults use".  That is hearing's IO-7: it happens without learning and
+# without thinking, which is the only admission test IO-7 sets.
+#
+# D2 order of work: segregate first, describe afterwards.  Sussman 2017 L37
+# - "Stream segregation occurs first, and then sound events are detected and
+# identified on the already sorted streams."  So a stream is hearing's
+# region, and the four numbers below are its descriptor.
+#
+# D3 the cue that binds bands into one stream is temporal coherence:
+# Calcus 2024 L12 - "binding together coherent acoustic (spectral, spatial,
+# and/or temporal) features into streams".
+#
+# D7 four descriptors, not nineteen, and the reason is Burns 2019 L37's own
+# redundancy rule - 19 objective measures cut to 7 by dropping one of any
+# pair correlating at |r| >= 0.45.  What each of the four is, and the paper
+# that puts it there, sits on `_describe_stream`.
+#
+# D8 no name for any of it.  A stream gets an index from the shared
+# induction rule (core/categories.py) and nothing else; DATA-7 and IO-7
+# already said so, and Burns 2019 L86 adds that identifying a sound's source
+# "appears only partly to rely on objective measures" anyway.
+
+# # ASSUMPTION: framing.  2048 samples is about 46 ms at 44.1 kHz; 512 hops
+# give seven-eighths overlap.  Nothing in the library states a window for
+# stream segregation, so both numbers are ours - swap them freely, no other
+# line reads them.
+FRAME_SAMPLES = 2048
+HOP_SAMPLES = 512
+
+# # ASSUMPTION: how much of the mixture a band or a stream must carry to
+# count at all.  Calcus 2024 L9 gives frequency distance as the segregation
+# cue and no cut; below this line a band is leftovers of the decomposition
+# rather than something that caught the ear.  One number doing both jobs is
+# deliberate - "worth hearing" should not mean two different things.
+STREAM_MIN_SHARE = 0.05
+
+# How different two sounds must be to be two categories.
+#
+# Not vision's INDUCTION_TAU, and the reason is arithmetic rather than taste:
+# `categories.similarity` returns 1 - *mean* absolute difference, so what a
+# shared 0.85 asks for is an average gap of 0.15 across the components.  The
+# two descriptors are not the same shape - vision's carries raw magnitudes
+# over nineteen components, hearing's four values bounded to 0..1 - so the
+# same number cannot mean the same thing on both.  Sharing the rule does not
+# mean sharing its calibration.
+#
+# # ASSUMPTION: 0.91.  Barsalou offers "similar enough" and no number, so
+# this stays an assumption; what is not assumed is *where the edges are*.
+# Measured on 2026-10-28 against the four cases that matter, using pure
+# tones built by the test file:
+#
+#   must separate  440 Hz from 3000 Hz, alone and inside a mixture -> 0.9022
+#   must not split the same pitch at two loudnesses (20000 vs 6000) -> 0.9263
+#
+# which leaves the window (0.9022, 0.9263], and 0.91 sits in it.  0.90 sat
+# one thousandth below the upper edge and collapsed a mixture's two tones
+# into a single category, which is how the window was found.
+#
+# The window does not stretch to every pair: 3000 Hz against 8000 Hz inside
+# a three-tone mixture reads 0.9565, so those two stay in one category.  The
+# reason is the mean over four components diluting pitch - say so rather
+# than paper over it.
+HEARING_TAU = 0.91
+
 class HearingSystem:
     """
     The AI's hearing system with biological auditory processing.
@@ -55,6 +129,14 @@ class HearingSystem:
         self.cochlea_filters = self._init_cochlea()  # Frequency decomposition
         self.frequency_map = {}  # tonotopic map
         self.auditory_memory = {}  # sound patterns in memory
+
+        # OPEN-22: the category ledger, running the very rule vision runs
+        # (core/categories.py).  A key is a content-free index - OPEN-21 C -
+        # so nothing in this file can name a sound.
+        self.auditory_ledger = {}
+        self._next_category = 0
+        self.last_induction = []
+        self.what = []
         
         self._load_state()
     
@@ -71,6 +153,10 @@ class HearingSystem:
                     # 睡眠整理的就是这两样，不落盘的话睡眠等于白做
                     self.auditory_memory = state.get("auditory_memory", self.auditory_memory)
                     self.sound_frequencies = state.get("sound_frequencies", self.sound_frequencies)
+                    # OPEN-22: without these, every restart would re-open
+                    # every category and the ledger would grow forever.
+                    self.auditory_ledger = state.get("auditory_ledger", self.auditory_ledger)
+                    self._next_category = int(state.get("next_category", 0))
             except:
                 pass
     
@@ -83,6 +169,8 @@ class HearingSystem:
             "words_recognized": self.words_recognized[-500:],
             "auditory_memory": self.auditory_memory,
             "sound_frequencies": self.sound_frequencies,
+            "auditory_ledger": self.auditory_ledger,
+            "next_category": self._next_category,
             "last_updated": datetime.now().isoformat()
         }
         tmp = state_file + ".tmp"
@@ -464,7 +552,8 @@ class HearingSystem:
         adjusts strength - strength alone never removes anything.
         """
         dropped = {"auditory_memory": 0, "known_sounds": 0,
-                   "sounds_heard": 0, "words_recognized": 0}
+                   "sounds_heard": 0, "words_recognized": 0,
+                   "auditory_ledger": 0}
 
         # Auditory patterns: delete the weak ones, then cap what is left
         before = len(self.auditory_memory)
@@ -486,6 +575,22 @@ class HearingSystem:
             keep = dict(ranked[:max_auditory])
             dropped["auditory_memory"] += len(self.auditory_memory) - len(keep)
             self.auditory_memory = keep
+
+        # OPEN-22: the category ledger gains a row for every sound shape it
+        # has never met, and no other hook prunes it, so without this it
+        # grows without end.  Evicted by how often a category was met rather
+        # than by strength - a category carries no strength of its own
+        # (DATA-5), only the times it was matched.
+        before = len(self.auditory_ledger)
+        if before > max_auditory:
+            ranked = sorted(
+                self.auditory_ledger.items(),
+                key=lambda kv: kv[1].get("times_seen", 0),
+                reverse=True,
+            )
+            keep = dict(ranked[:max_auditory])
+            dropped["auditory_ledger"] = before - len(keep)
+            self.auditory_ledger = keep
 
         # Known sounds: never heard again -> gone
         before = len(self.known_sounds)
@@ -532,3 +637,221 @@ class HearingSystem:
                     best_match = sound
         
         return best_match, best_similarity
+
+    # ------------------------------------------------------------------
+    # OPEN-22: one act of hearing, from PCM to a `what`
+    # ------------------------------------------------------------------
+
+    def hear_samples(self, samples, sample_rate=44100):
+        """
+        One act of hearing: split the mixture into streams, then describe.
+
+        D2 fixes the order (Sussman 2017 L37 - segregate first, describe
+        after), so a stream is hearing's region and `_describe_stream`
+        gives it the four numbers.  The shape it returns matches what
+        seeing hands to memory, which is the point: the one gate downstream
+        must not have to know which sense arrived.
+
+        D8 again - `what` is a flat list of four floats per stream, in the
+        order each stream carries the mixture.  Order is priority, the same
+        rule vision orders `what` by (OPEN-21 A).
+        """
+        import numpy as np
+
+        if samples is None or len(samples) < FRAME_SAMPLES:
+            return None
+
+        bands = self._band_powers(samples, sample_rate)
+        if bands is None:
+            return None
+
+        total = float(bands.sum())
+        if total <= 0.0:
+            self.what = []
+            self.last_induction = []
+            return {"what": [], "streams": 0, "loudness": 0.0}
+
+        described = []
+        for stream in self._segregate(bands, STREAM_MIN_SHARE):
+            carried = float(bands[:, list(stream)].sum())
+            descriptor = self._describe_stream(bands, stream, sample_rate)
+            if descriptor is not None:
+                described.append((carried, descriptor))
+
+        described.sort(key=lambda item: -item[0])
+        what = [descriptor for _carried, descriptor in described]
+
+        keys = []
+        next_key = self._next_category
+        for descriptor in what:
+            key, next_key = categories.induct(
+                descriptor, self.auditory_ledger, next_key,
+                tau=HEARING_TAU, first_seen=datetime.now().isoformat())
+            keys.append(key)
+        self._next_category = next_key
+
+        self.what = what
+        self.last_induction = keys
+        self._save_state()
+
+        return {
+            "what": what,
+            "streams": len(what),
+            "loudness": float(np.sqrt(total) / FRAME_SAMPLES / 32768.0),
+        }
+
+    def _band_powers(self, samples, sample_rate):
+        """
+        Power in each cochlear band, one row per frame: (frames, bands).
+
+        The bands are the basilar-membrane model this class always had
+        (`_init_cochlea` - 24 logarithmic bands, 50 Hz to 8 kHz).  Nothing
+        about the decomposition changed; what is new is that its output now
+        goes somewhere.
+        """
+        import numpy as np
+        length = int(len(samples))
+        if length < FRAME_SAMPLES:
+            return None
+
+        window = np.hanning(FRAME_SAMPLES)
+        freqs = np.fft.rfftfreq(FRAME_SAMPLES, 1.0 / float(sample_rate))
+        # The filters as declared (centre * 0.1 + 50) leave a gap between
+        # neighbours - measured, not guessed: a 3000 Hz tone sat in one and
+        # only its window leakage was recorded, which is how a whistle could
+        # have become silence.  The basilar membrane has no holes in it, so
+        # the spectrum is cut at the geometric midpoint between consecutive
+        # centres instead and every bin belongs to exactly one band.
+        centres = [band["center"] for band in self.cochlea_filters]
+        edges = [0.0]
+        for left, right in zip(centres, centres[1:]):
+            edges.append(math.sqrt(left * right))
+        edges.append(float(freqs[-1]) + 1.0)
+        spans = [(freqs >= low) & (freqs < high)
+                 for low, high in zip(edges, edges[1:])]
+
+        rows = []
+        for start in range(0, length - FRAME_SAMPLES + 1, HOP_SAMPLES):
+            frame = np.asarray(samples[start:start + FRAME_SAMPLES],
+                               dtype=float) * window
+            spectrum = np.abs(np.fft.rfft(frame)) ** 2
+            rows.append([float(spectrum[span].sum()) for span in spans])
+
+        return np.asarray(rows, dtype=float) if rows else None
+
+    @staticmethod
+    def _segregate(bands, min_share):
+        """
+        Which bands belong to which stream: the bands carrying enough of the
+        mixture, grouped by sitting next to each other.
+
+        The half of D3 this implements is Calcus 2024 L9 - "the larger the
+        frequency distance between A and B, the more likely participants are
+        to experience stream segregation".  A run of neighbouring bands with
+        energy in them is one stream; a stretch carrying nothing is a
+        frequency distance, and therefore two.
+
+        The other half of D3, temporal coherence (Calcus 2024 L12), is NOT
+        implemented, and the reason is measured rather than principled: on
+        steady sounds the band envelopes are flat, so a correlation between
+        them is answered by where the analysis window happened to land
+        rather than by anything in the scene - two unrelated steady tones
+        came out correlated.  Cutting that off needs a number the literature
+        does not give, so the cue that does not need one is used instead.
+        Recorded as a deviation in articles/2026-10-28-hearing-design.md.
+        """
+        mean_power = bands.mean(axis=0)
+        total = float(mean_power.sum())
+        if total <= 0.0:
+            return []
+
+        active = [index for index, value in enumerate(mean_power)
+                  if value / total >= min_share]
+
+        streams = []
+        for index in active:
+            if streams and index == streams[-1][-1] + 1:
+                streams[-1].append(index)
+            else:
+                streams.append([index])
+        return [tuple(group) for group in streams]
+
+    def _describe_stream(self, bands, stream, sample_rate):
+        """
+        The four numbers (D7), and the paper that put each one there.
+
+        spectral centroid - Burns 2019 L38, "the best individual descriptor"
+            of both naming accuracy and complexity
+        spectral flatness - Burns 2019 L21 lists it among the measures, and
+            it stands in for HNR: the two are that paper's documented
+            correlate (L36, r = -0.822; restated L79), while HNR needs a
+            fundamental we do not estimate
+        level - Burns 2019 L21's power in discrete frequency ranges,
+            log-squashed against s16 full scale so a shout and a whisper are
+            nearer than their raw amplitudes are
+        attack - where the envelope peaks inside the window; Ettlinger 2013
+            L140 has attack rise-time among the features that track timbre
+
+        Every one of them is bounded to about 0..1 so that no single
+        dimension can swamp the mean absolute difference the induction rule
+        measures similarity with.
+        """
+        import numpy as np
+        column = bands[:, list(stream)]
+        power = column.sum(axis=0)
+        if float(power.sum()) <= 0.0:
+            return None
+
+        centres = np.array([self.cochlea_filters[i]["center"]
+                            for i in stream])
+        centroid = float((centres * power).sum() / power.sum())
+        # Log position across the cochlear range, not hertz over the sample
+        # rate.  The ear's own map is logarithmic - _init_cochlea spaces the
+        # bands that way - and dividing by the sample rate would squeeze the
+        # whole audible range into the bottom fifth of this one component,
+        # where 440 Hz and 3000 Hz differ by 0.058 and the induction rule
+        # could not tell a hum from a whistle.
+        low = self.cochlea_filters[0]["center"]
+        high = min(self.cochlea_filters[-1]["center"], sample_rate / 2.0)
+        pitch = math.log(max(centroid, low) / low) / math.log(high / low)
+        centroid = max(0.0, min(1.0, pitch))
+
+        # Over the bands this stream occupies.  A stream of a single band
+        # comes out at 1.0 for arithmetic reasons - one value is trivially
+        # its own geometric and arithmetic mean - so this carries
+        # information only where a stream spans several bands, which is
+        # exactly when the scene is broadband.  Said rather than hidden: it
+        # separates a hiss from a tone and never separates two tones.
+        floor = float(power.max()) * 1e-9 + 1e-300
+        flatness = float(np.exp(np.mean(np.log(power + floor)))
+                         / (float(np.mean(power)) + floor))
+        # Clamped: the ratio can land a few ULPs above 1.0 when the sum
+        # rounds under the numerator, and a descriptor documented as bounded
+        # has to actually be bounded - the induction rule reads it either
+        # way, but nothing downstream expects 1.0000000000000024.
+        flatness = max(0.0, min(1.0, flatness))
+
+        envelope = column.sum(axis=1)
+        # First rise past nine tenths of the peak, not the peak itself.  On
+        # an envelope with no onset in it the argmax is whichever frame won
+        # by quantisation, and that number moved between two identical
+        # plays of the same sound - measured, then replaced.
+        peak = float(envelope.max())
+        if peak <= 0.0:
+            attack = 0.0
+        else:
+            above = np.nonzero(envelope >= 0.9 * peak)[0]
+            attack = float(above[0]) / float(max(len(envelope) - 1, 1))
+
+        # Parseval against s16 full scale: 32768 is a fact about the input
+        # format, and the log squash only maps 0..1 onto 0..1 - neither is a
+        # psychological quantity, so neither carries a # ASSUMPTION.  The
+        # power has to be an average across frames first: summing every
+        # frame pushed every loud sound to exactly 1.0, which made a shout
+        # and a whisper come out as the same number.
+        per_frame = float(column.sum()) / float(max(len(column), 1))
+        rms = math.sqrt(2.0 * per_frame) / FRAME_SAMPLES / 32768.0
+        rms = max(0.0, min(1.0, rms))
+        level = math.log10(1.0 + 9.0 * rms)
+
+        return [centroid, flatness, level, attack]

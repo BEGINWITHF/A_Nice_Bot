@@ -8,6 +8,8 @@ import math
 import os
 from datetime import datetime
 
+from core import categories
+
 # Hue bands over OpenCV's 0-179 hue range, **unnamed**.  A colour NAME is a
 # word, and Q1 (2026-10-02) applied the no-words ban to all three layers at
 # once - the momentary analysis, the sensory ledger, and the memory payload
@@ -51,11 +53,8 @@ def _color_fractions(image):
 MAX_REGIONS = 8
 MIN_REGION_AREA = 200
 
-# # ASSUMPTION: Barsalou offers "similar enough" as a judgement and never
-# says how similar, nor how fast a simulation should drift toward the
-# instance that just matched it.  Both numbers are ours.
-INDUCTION_TAU = 0.85
-INDUCTION_ALPHA = 0.10
+# The two induction numbers live with the rule they belong to:
+# core/categories.py, which vision and hearing now share (OPEN-22 D8).
 
 # Focus - R1/R2/R3, Diary/articles/2026-10-02-focus-and-fidelity.md section 5.
 # Where every number below came from: parameter-values section 11 (2026-10-03).
@@ -117,19 +116,8 @@ def _saliency_map(gray):
     return cv2.absdiff(gray, blurred)
 
 
-def _similarity(a, b):
-    """
-    How alike two representations are: 1.0 identical, 0.0 far apart.
-
-    Graded on purpose.  Barsalou L1286-1288 says perceptual symbol systems
-    "simply assume that two similar representations are compared", and a
-    comparison between two graded representations is itself graded - a set of
-    tokens either matches or it does not, which is why a Jaccard distance
-    could never carry this question.
-    """
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    return 1.0 - sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+# `_similarity` moved to core/categories.py with the rest of the induction
+# rule: hearing runs the same one (OPEN-22 D8), so it lives in one place.
 
 
 def _propose_regions(gray, hsv, saliency, focus):
@@ -649,47 +637,17 @@ class SeeingSystem:
 
     def _induct(self, descriptor):
         """
-        Barsalou's induction step, verbatim in structure (L1293-1315).
+        Barsalou's induction step (L1293-1315), now in one file shared with
+        hearing (OPEN-22 D8): see core/categories.py.
 
         Returns the key of the category the descriptor joined.  The key is
         an internal index and nothing else: it holds no content, is never
         put into `what`, and means nothing outside this ledger - which is
         exactly what an episodic index is (OPEN-21 C, Quest L10).
         """
-        best_key = None
-        best_sim = 0.0
-        for key, entry in self.known_objects.items():
-            simulation = entry.get("simulation") or []
-            if len(simulation) != len(descriptor):
-                continue
-            sim = _similarity(descriptor, simulation)
-            if sim > best_sim:
-                best_sim = sim
-                best_key = key
-
-        if best_key is not None and best_sim >= INDUCTION_TAU:
-            entry = self.known_objects[best_key]
-            simulation = entry.get("simulation") or descriptor
-            entry["simulation"] = [
-                (1.0 - INDUCTION_ALPHA) * old + INDUCTION_ALPHA * new
-                for old, new in zip(simulation, descriptor)
-            ]
-            entry["times_seen"] = entry.get("times_seen", 0) + 1
-            entry["memory_strength"] = min(
-                1.0, entry.get("memory_strength", 0.5) + 0.05)
-            return best_key
-
-        key = str(self._next_category)
-        while key in self.known_objects:
-            self._next_category += 1
-            key = str(self._next_category)
-        self._next_category += 1
-        self.known_objects[key] = {
-            "first_seen": datetime.now().isoformat(),
-            "times_seen": 1,
-            "simulation": list(descriptor),
-            "memory_strength": 0.5,
-        }
+        key, self._next_category = categories.induct(
+            descriptor, self.known_objects, self._next_category,
+            first_seen=datetime.now().isoformat())
         return key
 
     def _visual_attention(self, saliency, now):
