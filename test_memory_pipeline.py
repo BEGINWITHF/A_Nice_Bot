@@ -855,3 +855,60 @@ def test_loud_sound_is_memorised_and_louder_is_stronger(tmp_path):
     assert p.record("hearing", {"volume_band": 12}, salience=loud) is not None
     assert audio_salience(9.0) == 1.0
     assert audio_salience(-1.0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# D4 second half - attention over what breaks an event (Sussman 2017 L43/L46)
+# ---------------------------------------------------------------------------
+
+_FIRST = {"what": [[0.1, 0.2, 0.3, 0.4]]}
+_JUMP = {"what": [[0.9, 0.9, 0.9, 0.9]]}
+
+
+def test_an_unattended_change_does_not_break_the_event(tmp_path):
+    """
+    Sussman 2017 L43: with the sounds ignored, "the second deviant did not
+    elicit MMN" - the change happened and was not registered as an event of
+    its own.  Attended, it was.
+    """
+    ignored = new_pipeline(tmp_path / "ignored")
+    heard = new_pipeline(tmp_path / "heard")
+
+    quiet_from = ignored.record("hearing", _FIRST, salience=0.5, now=1000.0,
+                                attention=0.0)["key"]
+    quiet_to = ignored.record("hearing", _JUMP, salience=0.5, now=1001.0,
+                              attention=0.0)["key"]
+    assert quiet_to == quiet_from
+
+    loud_from = heard.record("hearing", _FIRST, salience=0.5, now=1000.0,
+                             attention=1.0)["key"]
+    loud_to = heard.record("hearing", _JUMP, salience=0.5, now=1001.0,
+                           attention=1.0)["key"]
+    assert loud_to != loud_from
+
+
+def test_attention_decides_the_break_and_never_what_was_learned(tmp_path):
+    """
+    Attention gates the cut, not the learning: the model absorbs the real
+    error either way.  L46 is about what is registered as an event, not
+    about what the system took in - an ignored sound is still heard.
+    """
+    p = new_pipeline(tmp_path)
+    p.record("hearing", _FIRST, salience=0.5, now=1000.0, attention=0.0)
+    model_before = list(p.segments["hearing"]["model"])
+
+    p.record("hearing", _JUMP, salience=0.5, now=1001.0, attention=0.0)
+
+    assert p.segments["hearing"]["model"] != model_before
+    assert p.segments["hearing"]["baseline"] > 0.0
+
+
+def test_the_window_still_turns_over_with_nobody_attending(tmp_path):
+    """The clock is a clock - attention weighs the early cut and nothing else."""
+    p = new_pipeline(tmp_path)
+    first = p.record("hearing", _FIRST, salience=0.5, now=1000.0,
+                     attention=0.0)
+    later = p.record("hearing", _FIRST, salience=0.5, now=1031.0,
+                     attention=0.0)
+
+    assert later["key"] != first["key"]

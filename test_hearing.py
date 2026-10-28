@@ -25,6 +25,7 @@ assumed.
 
 import json
 import os
+import struct
 import sys
 from datetime import datetime, timedelta
 
@@ -41,6 +42,9 @@ needs_numpy = pytest.mark.skipif(np is None, reason="numpy is not installed")
 
 from core import categories
 from core.hearing import FRAME_SAMPLES, HearingSystem
+from core.host_ingest import HostIngest
+from core.memory_pipeline import MemoryPipeline
+from core.sensory import SensorySystem
 
 
 def _tone(*parts, seconds=0.5, rate=44100, amplitude=20000):
@@ -312,3 +316,34 @@ def test_attention_lets_a_quiet_stream_in_that_passive_hearing_misses(tmp_path):
 
     assert hearing.focus_level > 0.9
     assert held["streams"] >= 2
+
+
+@needs_numpy
+def test_what_the_ear_attends_to_is_what_weighs_the_cut(tmp_path):
+    """
+    The wiring of D4's second half: focus leaves the ear and turns up at the
+    pipeline as `attention`, so the rule is decided in one place rather than
+    twice in two.
+    """
+    pipeline = MemoryPipeline(data_dir=str(tmp_path / "mem"),
+                              policy={"min_salience": 0.0})
+    senses = SensorySystem(str(tmp_path / "senses"))
+    arrivals = []
+    real = pipeline.record
+
+    def spy(kind, payload, salience=0.5, now=None, attention=1.0):
+        arrivals.append((kind, attention))
+        return real(kind, payload, salience=salience, now=now,
+                    attention=attention)
+
+    pipeline.record = spy
+    ingest = HostIngest(senses, pipeline)
+
+    ingest("sound", struct.pack("<4410h", *([9000] * 4410)),
+           {"device": "cam"})
+
+    assert arrivals, "a loud enough sample must reach the gate"
+    assert arrivals[0][0] == "hearing"
+    # Not the default of 1.0: whatever the ear is attending to is what was
+    # handed over, or this whole rule lives in two places.
+    assert arrivals[0][1] == senses.hearing.focus_level

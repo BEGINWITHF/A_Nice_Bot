@@ -390,12 +390,18 @@ class MemoryPipeline:
     # ------------------------------------------------------------------
     # When to memorize
     # ------------------------------------------------------------------
-    def record(self, kind, payload, salience=0.5, now=None):
+    def record(self, kind, payload, salience=0.5, now=None, attention=1.0):
         """
         Try to encode one sensed event.
 
         Returns the entry holding it (in the focus, or in `recent` if that
         is where it lives), or None when the policy rejected it.
+
+        `attention` is what D4's second half hangs on: it weighs the early
+        cut and nothing else (see `_segment`).  It defaults to 1.0, so every
+        caller that has no notion of attention - vision included - is
+        unchanged.  A salience below the gate still rejects the observation
+        before any of this is reached.
         """
         now = time.time() if now is None else now
         salience = max(0.0, min(1.0, float(salience)))
@@ -414,7 +420,7 @@ class MemoryPipeline:
             self.total_dropped += 1
             return None
 
-        key = self._segment(kind, payload, now)
+        key = self._segment(kind, payload, now, attention)
 
         # Gate 2: still inside the same event -> reinforce, never duplicate
         entry = self._find(key)
@@ -441,15 +447,31 @@ class MemoryPipeline:
         return entry
 
     # -- segmentation (OPEN-16 G, OPEN-21 point B) --------------------
-    def _segment(self, kind, payload, now):
+    def _segment(self, kind, payload, now, attention=1.0):
         """
         Decide which event this observation belongs to, and return its key.
 
-        Default cut: the window expired (OPEN-16 primary rule).
+        Default cut: the window expired (OPEN-16 primary rule).  That one is
+        a clock, and attention has nothing to say about a clock.
+
         Early cut:   a prediction error running above this event's own
                      baseline (OPEN-21 point B), allowed at most once per
                      window slot so that a burst of changes cannot degrade
                      back into option E (one entry per frame).
+
+        `attention` weighs that early cut and nothing else, and by exactly
+        what it is already worth: 1.0 leaves the test as it was, 0.0 means
+        nothing this moment counts as a change worth breaking for.
+
+        This is D4's second half, and the evidence for it is auditory.
+        Sussman 2017 L43: with two deviants close together in time, "the
+        second deviant did not elicit MMN" while the sounds were ignored,
+        and did once the listener attended.  L46 puts it flatly -
+        "within-stream event formation, and not stream segregation, was
+        precluded by ... attention".  Hearing therefore passes its focus.
+        Vision passes nothing and keeps behaving exactly as before, because
+        nobody has measured the same thing for sight: gating vision on an
+        auditory result would be a second inference, not a citation.
         """
         state = self.segments.get(kind)
         situation = _payload_vector(payload)
@@ -467,13 +489,16 @@ class MemoryPipeline:
         # noise never gets here, because it sits in the baseline as much as
         # it sits in the error.  What does get here is an abrupt jump.
         error = _prediction_error(state.get("model"), situation)
+        judged = error * max(0.0, min(1.0, float(attention)))
         raised = (
-            error >= float(self.policy["shock_floor"])
-            and error >= float(state.get("baseline", 0.0))
-                          * float(self.policy["shock_ratio"])
+            judged >= float(self.policy["shock_floor"])
+            and judged >= float(state.get("baseline", 0.0))
+                           * float(self.policy["shock_ratio"])
         )
         early = raised and slot != state.get("shock_slot")
 
+        # The model still learns the real error.  Attention decides what
+        # breaks an event, never what the event turns out to have been.
         _integrate(state, situation, error, now, window,
                    float(self.policy["event_model_tau_s"]))
 

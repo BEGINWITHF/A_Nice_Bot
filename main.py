@@ -194,6 +194,13 @@ def sense_once(camera, mic):
                     "hearing",
                     {"what": what},
                     salience=audio_salience(volume),
+                    # D4's second half: while attention is elsewhere, a
+                    # change in what is being heard does not break the event
+                    # it sits in (Sussman 2017 L43 - the second deviant
+                    # "did not elicit MMN" while ignored; L46 - within-stream
+                    # event formation, not segregation, is what attention
+                    # precludes).  Focus decides that and nothing else.
+                    attention=senses.hearing.focus_level,
                 )
                 brain.learn_from(entry, senses.hearing.last_induction)
 

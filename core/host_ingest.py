@@ -139,6 +139,10 @@ class HostIngest:
             "hearing",
             {"what": what},
             salience=audio_salience(volume),
+            # D4's second half: an unattended change does not break the
+            # event it sits in (Sussman 2017 L43/L46).  Same value, same
+            # rule as the local ear - one pipeline, one notion of attention.
+            attention=self.senses.hearing.focus_level,
         )
         if self.learn is not None:
             self.learn(entry, self.senses.hearing.last_induction)

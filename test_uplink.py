@@ -158,9 +158,10 @@ def host(tmp_path):
     ingest.spy = []
     real = pipeline.record
 
-    def spy(kind, payload, salience=0.5, now=None):
+    def spy(kind, payload, salience=0.5, now=None, attention=1.0):
         ingest.spy.append((kind, payload, salience))
-        return real(kind, payload, salience=salience, now=now)
+        return real(kind, payload, salience=salience, now=now,
+                    attention=attention)
 
     pipeline.record = spy
     return ingest
