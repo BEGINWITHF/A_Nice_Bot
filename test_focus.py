@@ -93,6 +93,7 @@ def _weak_region_frame():
 # Focus itself: attention that stays put is attention that is held
 # ---------------------------------------------------------------------------
 
+@needs_cv2
 def test_focus_rises_while_attention_holds_and_falls_when_it_moves(tmp_path):
     seeing = SeeingSystem(str(tmp_path))
     saliency = _frame_with_peak(240, 320, (100, 80))
@@ -114,6 +115,7 @@ def test_focus_rises_while_attention_holds_and_falls_when_it_moves(tmp_path):
     assert seeing.focus_level < held
 
 
+@needs_cv2
 def test_focus_never_leaves_its_own_range(tmp_path):
     seeing = SeeingSystem(str(tmp_path))
     saliency = _frame_with_peak(240, 320, (10, 10))
@@ -124,6 +126,7 @@ def test_focus_never_leaves_its_own_range(tmp_path):
         assert 0.0 <= seeing.focus_level <= 1.0
 
 
+@needs_cv2
 def test_focus_is_recomputed_rather_than_kept(tmp_path):
     """R3's first half: focus belongs to one act of encoding, not to state."""
     seeing = SeeingSystem(str(tmp_path))

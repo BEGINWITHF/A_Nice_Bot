@@ -57,10 +57,15 @@ class HostIngest:
     be writing a JSON file while the other is mid-sleep.
     """
 
-    def __init__(self, senses, pipeline, lock=None):
+    def __init__(self, senses, pipeline, lock=None, learn=None):
         self.senses = senses
         self.pipeline = pipeline
         self.lock = lock if lock is not None else threading.RLock()
+        # STEP-2 input half (OPEN-10).  The local eye and this one share a
+        # pipeline, so they must share a way to learn from what was
+        # memorised - otherwise a frame from a device would be remembered
+        # and never learned from, and the bot would learn only from itself.
+        self.learn = learn
 
     def __call__(self, channel, body, meta):
         with self.lock:
@@ -95,6 +100,12 @@ class HostIngest:
                 self.senses.seeing.known_objects,
             ),
         )
+        # STEP-2 input half (OPEN-10): learn from what was memorised, and
+        # from nothing else - the same gate decides both.  A device frame
+        # gets learned from exactly like a local one, which is the whole
+        # point of sharing one pipeline between the two threads.
+        if self.learn is not None:
+            self.learn(entry, self.senses.seeing.last_induction)
         # Only the count crosses back.  The perceptual representation is the
         # bot's own; the device is an eye, not a reader.
         return {"channel": "vision", "recorded": entry is not None,

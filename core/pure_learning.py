@@ -137,6 +137,29 @@ class PureLearningSystem:
 
         self._save_state()
 
+    def learn_from(self, entry, induction):
+        """
+        The input half of STEP-2 (OPEN-10): learn from an observation that
+        was memorised, and from no other.
+
+        OPEN-10 found that the loop only slept - perception never reached
+        learning at all - and the fix had to answer one question: which
+        observations are worth learning from?  The answer is already made
+        somewhere.  The pipeline's gate decides what gets written to memory,
+        and a frame too dull to remember is too dull to learn from, so the
+        two decisions are the same decision and there is no second threshold
+        anywhere in this file.
+
+        `entry` is whatever `MemoryPipeline.record` returned, None when the
+        policy rejected it.  `induction` is the ledger keys the frame's
+        regions joined, in the order they caught the eye: internal indices
+        that hold no content (OPEN-21 C), which is why they can stand for
+        "the same thing met again" without ever naming it.
+        """
+        if entry is None:
+            return
+        self.learn_pattern(induction)
+
     def get_stats(self):
         """Get learning statistics"""
         return {

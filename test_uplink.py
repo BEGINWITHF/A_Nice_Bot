@@ -455,6 +455,7 @@ def test_see_camera_still_reports_a_missing_eye(tmp_path):
 
 
 @needs_numpy
+@needs_cv2
 def test_a_remote_frame_lifts_the_body_like_the_local_eye(tmp_path):
     senses = SensorySystem(str(tmp_path))
     load_before, awareness_before = senses.sensory_load, senses.awareness_level

@@ -144,7 +144,7 @@ def sense_once(camera, mic):
             # keeping, a frame with nothing new is not memorised
             if result and "analysis" in result:
                 what = result["analysis"].get("what") or []
-                pipeline.record(
+                entry = pipeline.record(
                     "seeing",
                     # The whole observation is its perceptual representation:
                     # a flat list of numbers, ordered by priority, with no
@@ -156,6 +156,22 @@ def sense_once(camera, mic):
                         senses.seeing.known_objects,
                     ),
                 )
+
+                # The input half of STEP-2 (OPEN-10).  Until this, the loop
+                # only slept - perception never reached learning, which is
+                # what OPEN-10 found and then parked.  It learns from a
+                # frame that was memorised and from no other: the one gate
+                # decides both, so a frame too dull to remember is too dull
+                # to learn from, and there is no second threshold anywhere.
+                #
+                # The sequence is `last_induction`, not `what`.  Those are
+                # the ledger keys the regions joined, in the order the
+                # frame's contents caught the eye - a key is a content-free
+                # index, which is exactly what OPEN-21 C ruled an episodic
+                # index to be (Quest L10), and the order is the priority
+                # order fixed by OPEN-21 A.  No word, and no number standing
+                # for a thing.
+                brain.learn_from(entry, senses.seeing.last_induction)
 
         # 2. HEAR - Microphone captures sounds
         if mic.available:
@@ -210,7 +226,7 @@ def start_uplink():
         return None
 
     server = ObservationServer(
-        HostIngest(senses, pipeline, INGEST_LOCK),
+        HostIngest(senses, pipeline, INGEST_LOCK, learn=brain.learn_from),
         bind=cfg["bind"],
         port=cfg["port"],
         token=cfg["token"],
