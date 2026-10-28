@@ -17,6 +17,20 @@ from datetime import datetime
 
 from core import categories
 
+# Attention's numbers, imported from vision rather than copied.  The hold
+# and release rates were sourced from studies of attention itself, not of
+# sight (Dugue et al. 2020: endogenous attention takes about 300 ms to
+# deploy and can be sustained, exogenous about 100 ms and is transient), so
+# they belong to attention and not to one sense.  The relaxation was
+# measured once, in vision; there is no auditory measurement in the library,
+# and making up a second number would be a second unmeasured number rather
+# than a better one.
+from core.seeing import (
+    FOCUS_HOLD_TAU_S,
+    FOCUS_RELEASE_TAU_S,
+    FOCUS_THRESHOLD_RELAXATION,
+)
+
 # ---------------------------------------------------------------------------
 # OPEN-22: from PCM to a `what`  -  Diary/articles/2026-10-28-hearing-design.md
 # ---------------------------------------------------------------------------
@@ -137,6 +151,14 @@ class HearingSystem:
         self._next_category = 0
         self.last_induction = []
         self.what = []
+
+        # OPEN-22 D4: attention in hearing, the same three rules vision
+        # runs.  Focus belongs to this act of hearing and to no record: it is
+        # never written to disk and never read by induction (R3), and what it
+        # moves is the bar a stream has to clear to be heard at all.
+        self.focus_level = 0.0        # 0 spread over everything, 1 held
+        self._attention_band = None   # the band attention was last on
+        self._attention_at = None
         
         self._load_state()
     
@@ -642,7 +664,32 @@ class HearingSystem:
     # OPEN-22: one act of hearing, from PCM to a `what`
     # ------------------------------------------------------------------
 
-    def hear_samples(self, samples, sample_rate=44100):
+    def _update_attention(self, band, now):
+        """
+        Whether attention has stayed where it was - D4's half of the rule.
+
+        Held while the loudest band is the same band it was, released when
+        it moves.  An exact exponential over real time, so the value means
+        the same thing however often the microphone is polled.
+
+        R3 applies to hearing as it does to sight: this never reaches disk
+        and induction never reads it.  Focus is a property of this act of
+        hearing, and the moment it is written down it starts describing
+        records it did not shape.
+        """
+        previous, last = self._attention_band, self._attention_at
+        holding = (previous is not None and last is not None
+                   and band is not None and band == previous)
+        dt = 0.0 if last is None else max(0.0, (now - last).total_seconds())
+        tau = FOCUS_HOLD_TAU_S if holding else FOCUS_RELEASE_TAU_S
+        alpha = 1.0 - math.exp(-dt / max(tau, 1e-9))
+        target = 1.0 if holding else 0.0
+        self.focus_level = max(0.0, min(
+            1.0, self.focus_level + alpha * (target - self.focus_level)))
+        self._attention_band = band
+        self._attention_at = now
+
+    def hear_samples(self, samples, sample_rate=44100, now=None):
         """
         One act of hearing: split the mixture into streams, then describe.
 
@@ -669,10 +716,32 @@ class HearingSystem:
         if total <= 0.0:
             self.what = []
             self.last_induction = []
+            self._update_attention(None, datetime.now())
             return {"what": [], "streams": 0, "loudness": 0.0}
 
+        # Attention first, exactly as vision does it: where it is has to be
+        # settled before anything is let in.  The loudest band is a surround
+        # difference with no category in it, so this much stays
+        # pre-attentive (IO-7).  `now` is a parameter for the same reason
+        # vision's is: focus is a rate over real time, and anything that has
+        # to be tested has to be able to drive the clock.
+        if now is None:
+            now = datetime.now()
+        peak_band = int(bands.mean(axis=0).argmax())
+        self._update_attention(peak_band, now)
+
+        # The one thing focus moves is how much of the mixture a stream has
+        # to carry to be heard at all - D4, and the citation is Sussman 2017
+        # L40: listeners doing an active task got two streams apart at a
+        # *smaller frequency separation* than the same listeners did
+        # passively.  Attention widens what gets in; nothing else in this
+        # pipeline moves, and nothing about a record already written does
+        # either (R3).
+        bar = STREAM_MIN_SHARE * (
+            1.0 - FOCUS_THRESHOLD_RELAXATION * self.focus_level)
+
         described = []
-        for stream in self._segregate(bands, STREAM_MIN_SHARE):
+        for stream in self._segregate(bands, bar):
             carried = float(bands[:, list(stream)].sum())
             descriptor = self._describe_stream(bands, stream, sample_rate)
             if descriptor is not None:
@@ -694,10 +763,15 @@ class HearingSystem:
         self.last_induction = keys
         self._save_state()
 
+        frames = max(len(bands), 1)
         return {
             "what": what,
             "streams": len(what),
-            "loudness": float(np.sqrt(total) / FRAME_SAMPLES / 32768.0),
+            # The same correction `_describe_stream` needed for `level`: an
+            # average across frames, or a longer snippet reads as a louder
+            # one playing the very same sound.
+            "loudness": float(np.sqrt(total / frames) / FRAME_SAMPLES
+                              / 32768.0),
         }
 
     def _band_powers(self, samples, sample_rate):

@@ -23,8 +23,10 @@ a picture land in the same kind of ledger - tested here rather than
 assumed.
 """
 
+import json
 import os
 import sys
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -232,3 +234,81 @@ def test_the_ledger_survives_a_restart(tmp_path):
 
     assert again.auditory_ledger == hearing.auditory_ledger
     assert again._next_category == hearing._next_category
+
+
+# ---------------------------------------------------------------------------
+# D4 - attention, the three rules vision already runs (Sussman 2017 L40/L43)
+# ---------------------------------------------------------------------------
+
+@needs_numpy
+def test_focus_rises_while_the_same_sound_keeps_arriving_and_falls_when_it_moves(tmp_path):
+    hearing = HearingSystem(str(tmp_path))
+    low = _tone((440.0, 1.0))
+    elsewhere = _tone((3000.0, 1.0))
+    start = datetime(2026, 10, 29, 8, 0, 0)
+
+    # The first moment only records where attention is.
+    hearing.hear_samples(low, 44100, now=start)
+    assert hearing.focus_level == 0.0
+
+    hearing.hear_samples(low, 44100, now=start + timedelta(seconds=2))
+    held = hearing.focus_level
+    assert held > 0.5
+
+    hearing.hear_samples(elsewhere, 44100, now=start + timedelta(seconds=4))
+    assert hearing.focus_level < held
+
+
+@needs_numpy
+def test_focus_never_leaves_its_own_range(tmp_path):
+    hearing = HearingSystem(str(tmp_path))
+    start = datetime(2026, 10, 29, 8, 0, 0)
+
+    for step in range(40):
+        # Alternating so it is forever being released and re-taken.
+        signal = _tone((440.0, 1.0) if step % 2 else (3000.0, 1.0))
+        hearing.hear_samples(signal, 44100,
+                             now=start + timedelta(seconds=step))
+        assert 0.0 <= hearing.focus_level <= 1.0
+
+
+@needs_numpy
+def test_focus_is_never_written_down(tmp_path):
+    """R3 for hearing: a moment of attention belongs to that moment."""
+    directory = str(tmp_path)
+    hearing = HearingSystem(directory)
+    start = datetime(2026, 10, 29, 8, 0, 0)
+    signal = _tone((440.0, 1.0))
+
+    hearing.hear_samples(signal, 44100, now=start)
+    hearing.hear_samples(signal, 44100, now=start + timedelta(seconds=2))
+    assert hearing.focus_level > 0.5
+
+    with open(os.path.join(directory, "hearing_state.json"),
+              encoding="utf-8") as handle:
+        saved = json.load(handle)
+    assert "focus_level" not in saved
+    assert HearingSystem(directory).focus_level == 0.0
+
+
+@needs_numpy
+def test_attention_lets_a_quiet_stream_in_that_passive_hearing_misses(tmp_path):
+    """
+    D4's whole point, and the citation for it: Sussman 2017 L40 - listeners
+    doing an active task separated two streams at a *smaller* frequency
+    separation than the same listeners did passively.
+    """
+    hearing = HearingSystem(str(tmp_path))
+    signal = _tone((440.0, 1.0), (3000.0, 0.2))
+    start = datetime(2026, 10, 29, 8, 0, 0)
+
+    passive = hearing.hear_samples(signal, 44100, now=start)
+    assert passive["streams"] == 1
+
+    held = None
+    for step in (1, 2, 3):
+        held = hearing.hear_samples(signal, 44100,
+                                    now=start + timedelta(seconds=2 * step))
+
+    assert hearing.focus_level > 0.9
+    assert held["streams"] >= 2

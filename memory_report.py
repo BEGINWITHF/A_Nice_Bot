@@ -206,25 +206,35 @@ def show_hearing():
     if not state:
         print("  no state yet")
         return
-    print(f"sensitivity {state.get('hearing_sensitivity', 0):.3f}  "
-          f"({len(state.get('words_recognized', []))} words recognised, "
-          f"{len(state.get('sound_frequencies', {}))} frequencies stored)")
 
-    memory = state.get("auditory_memory", {})
-    if not memory:
-        print("  no sounds memorised yet")
-        return
-    ranked = sorted(memory.items(),
-                    key=lambda kv: kv[1] if isinstance(kv[1], (int, float))
-                    else kv[1].get("times_heard", 0) if isinstance(kv[1], dict)
-                    else 0, reverse=True)
-    for name, data in ranked[:12]:
-        if isinstance(data, dict):
-            times = data.get("times_heard", data.get("count", 1))
-            strength = data.get("memory_strength", data.get("strength", 0))
-            print(f"  {name:<24} heard {times:>4}x  strength {strength:.2f}")
-        else:
-            print(f"  {name:<24} {data}")
+    # OPEN-22: hearing files what it heard as unnamed categories, and the
+    # loop feeds nothing else any more.  Leading with `words_recognised`
+    # would be leading with a number nothing can move.
+    ledger = state.get("auditory_ledger", {})
+    print(f"{len(ledger)} sound categories, "
+          f"{state.get('next_category', 0)} ever opened, "
+          f"sensitivity {state.get('hearing_sensitivity', 0):.3f}")
+
+    if ledger:
+        ranked = sorted(ledger.items(),
+                        key=lambda kv: kv[1].get("times_seen", 0),
+                        reverse=True)
+        for key, data in ranked[:12]:
+            print(f"  #{key:<6} met {data.get('times_seen', 0):>4}x  "
+                  f"first {str(data.get('first_seen'))[:19]}")
+    else:
+        print("  no sound categorised yet")
+
+    # Still on disk because IO-6 has not decided what a sensory ledger may
+    # keep (OPEN-17 parked them there).  Nothing writes them now - kept
+    # visible rather than quietly dropped, so the day IO-6 settles it the
+    # leftovers are still countable.
+    stale = [name for name in ("words_recognized", "known_sounds",
+                               "auditory_memory", "sound_frequencies")
+             if state.get(name)]
+    if stale:
+        print("  on disk, no longer fed (IO-6 / OPEN-22): "
+              + ", ".join(stale))
 
 
 def show_human():
